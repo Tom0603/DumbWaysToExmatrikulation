@@ -123,7 +123,40 @@ const Sfx = {
   tick() { this.tone(980, 0.04, 'square', 0.035); },
   blip() { this.tone(660, 0.05, 'square', 0.04); },
   faster() { this.seq([392, 523, 659, 784, 1046, 1318], 60, 0.08); },
-  over() { this.seq([392, 330, 262, 196], 180, 0.25); }
+  over() { this.seq([392, 330, 262, 196], 180, 0.25); },
+  // Pups: wabbelnder Grundton + gefiltertes Rauschen, Lautstärke flattert
+  fart(dur = 1.1) {
+    const c = this.ctx; if (!c) return;
+    const t = c.currentTime, N = 64;
+    const pitch = new Float32Array(N), amp = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const k = i / (N - 1);
+      pitch[i] = (95 - 40 * k) * (0.8 + Math.random() * 0.4);                    // sinkt, eiert
+      const env = Math.min(1, k * 12) * (1 - Math.pow(k, 3));                    // schnell rein, langsam raus
+      amp[i] = env * (i % 2 ? 0.35 + Math.random() * 0.3 : 1) * 0.22;             // Flattern der Backen
+    }
+    amp[N - 1] = 0;
+
+    const o = c.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueCurveAtTime(pitch, t, dur);
+
+    const len = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const noise = c.createBufferSource(); noise.buffer = buf;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 180; bp.Q.value = 0.8;
+    const ng = c.createGain(); ng.gain.value = 0.6;
+
+    const shaper = c.createWaveShaper(), curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { const x = i / 128 - 1; curve[i] = Math.tanh(x * 4); }
+    shaper.curve = curve;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(900, t); lp.frequency.exponentialRampToValueAtTime(250, t + dur);
+    const g = c.createGain(); g.gain.setValueCurveAtTime(amp, t, dur);
+
+    o.connect(shaper); noise.connect(bp); bp.connect(ng); ng.connect(shaper);
+    shaper.connect(lp); lp.connect(g); g.connect(c.destination);
+    o.start(t); noise.start(t); o.stop(t + dur + 0.05); noise.stop(t + dur + 0.05);
+  }
 };
 
 // ---------- Helfer ----------
@@ -221,7 +254,7 @@ class MicroGame extends Phaser.Scene {
     Sfx.lose();
     if (this.onLose) this.onLose();
     this.cameras.main.shake(260, 0.012);
-    this.time.delayedCall(750, () => this.scene.start('Transition'));
+    this.time.delayedCall(this.loseDelay || 750, () => this.scene.start('Transition'));
   }
 
   // Klick/Tap oder Leertaste
@@ -972,6 +1005,62 @@ class KloFinden extends MicroGame {
     }
     this.placePlayer(dt);
     this.drawDoors();
+  }
+  onLose() {   // Zu spät: Hose voll
+    this.loseDelay = 2600;
+    const px = this.player.x, py = this.player.y, BROWN = 0x6B3F1D;
+    this.hl.setVisible(false);
+    const dim = this.add.rectangle(0, 0, W, H, COL.ink, 0).setOrigin(0, 0).setDepth(8);
+    this.tweens.add({ targets: dim, fillAlpha: 0.55, duration: 400 });
+    this.cameras.main.pan(px, py - 40, 600, 'Quad.easeOut');
+    this.cameras.main.zoomTo(2, 600, 'Quad.easeOut');
+    this.bubble.setText('OH NEIN …').setColor('#6B3F1D').setVisible(true);
+
+    // Zusammenkneifen, dann verlieren
+    this.tweens.add({ targets: this.player, scaleX: 1.15, scaleY: 0.85, duration: 90, yoyo: true, repeat: 3 });
+    this.time.delayedCall(450, () => {
+      Sfx.fart();
+      this.cameras.main.shake(400, 0.006);
+      const stain = this.add.graphics();
+      stain.fillStyle(BROWN, 0.92).fillEllipse(0, -8, 24, 16).fillRect(-9, -6, 7, 7).fillRect(2, -6, 7, 7);
+      stain.setScale(0);
+      this.player.add(stain);
+      this.tweens.add({ targets: stain, scale: 1, duration: 500, ease: 'Back.easeOut' });
+
+      const puddle = this.add.graphics({ x: px, y: py }).setDepth(9).setScale(0, 1);
+      puddle.fillStyle(BROWN, 0.85).fillEllipse(0, 1, 56, 8);
+      this.tweens.add({ targets: puddle, scaleX: 1, duration: 900, delay: 300, ease: 'Quad.easeOut' });
+      for (let i = 0; i < 4; i++) {
+        const drop = this.add.circle(px + Phaser.Math.Between(-7, 7), py - 4, 2.5, BROWN).setDepth(11);
+        this.tweens.add({ targets: drop, y: py, duration: 260, delay: 150 + i * 180, repeat: 2, repeatDelay: 200, onComplete: () => drop.destroy() });
+      }
+    });
+
+    // Stinkwolken
+    this.time.addEvent({ delay: 170, startAt: -550, repeat: 11, callback: () => {
+      const s = this.add.graphics({ x: px + Phaser.Math.Between(-18, 18), y: py - 20 }).setDepth(11);
+      s.lineStyle(3, 0x9BBF3A, 0.9).beginPath();
+      for (let k = 0; k <= 10; k++) s.lineTo(Math.sin(k * 0.9) * 5, -k * 3);
+      s.strokePath();
+      this.tweens.add({ targets: s, y: s.y - 45, alpha: 0, duration: 900, onComplete: () => s.destroy() });
+    } });
+
+    // Fliegen
+    this.time.delayedCall(900, () => {
+      this.bubble.setText('💩').setVisible(true);
+      this.tweens.add({ targets: this.bubble, scale: { from: 0, to: 1.4 }, duration: 300, ease: 'Back.easeOut' });
+      for (let i = 0; i < 3; i++) {
+        const fly = this.add.container(px, py - 20, [
+          this.add.ellipse(-3, -3, 6, 4, 0xFFFFFF, 0.7), this.add.ellipse(3, -3, 6, 4, 0xFFFFFF, 0.7),
+          this.add.circle(0, 0, 2.5, COL.ink)
+        ]).setDepth(12);
+        const r = 18 + i * 7, ph = i * 2.1;
+        this.tweens.addCounter({ from: 0, to: Math.PI * 6, duration: 1700, onUpdate: tw => {
+          const a = tw.getValue() * (i % 2 ? -1 : 1) + ph;
+          fly.setPosition(px + Math.cos(a) * r, py - 22 + Math.sin(a * 1.7) * r * 0.5);
+        } });
+      }
+    });
   }
 }
 
