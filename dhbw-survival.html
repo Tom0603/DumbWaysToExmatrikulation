@@ -139,6 +139,23 @@ const Sfx = {
   coin() { this.tone(988, 0.08, 'square', 0.06); setTimeout(() => this.tone(1319, 0.35, 'square', 0.06), 80); },
   faster() { this.seq([392, 523, 659, 784, 1046, 1318], 60, 0.08); },
   over() { this.seq([392, 330, 262, 196], 180, 0.25); },
+  // Feuer: Rauschen mit zufälligem Knacken + aufsteigendes Fauchen
+  burn(dur = 1.6) {
+    const c = this.ctx; if (!c) return;
+    const t = c.currentTime, len = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+    let pop = 0;
+    for (let i = 0; i < len; i++) {
+      if (Math.random() < 0.0009) pop = 0.6 + Math.random() * 0.4;   // Knacken
+      pop *= 0.985;
+      d[i] = (Math.random() * 2 - 1) * (0.25 + pop);
+    }
+    const src = c.createBufferSource(); src.buffer = buf;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(2500, t); lp.frequency.exponentialRampToValueAtTime(600, t + dur);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(lp); lp.connect(g); g.connect(c.destination);
+    src.start(t); src.stop(t + dur);
+    this.tone(220, 0.5, 'sawtooth', 0.05, 500);
+  },
   // Pups: wabbelnder Grundton + gefiltertes Rauschen, Lautstärke flattert
   fart(dur = 1.1) {
     const c = this.ctx; if (!c) return;
@@ -512,10 +529,10 @@ class WlanFangen extends MicroGame {
     bg.lineStyle(10, 0x2E3F48);
     for (let y = 140; y < 420; y += 60) bg.lineBetween(30, y, 770, y);   // Sitzreihen
 
-    this.r = Math.max(50, 74 - (this.spd - 1) * 40);
+    this.r = Math.max(62, 88 - (this.spd - 1) * 40);
     this.sig = { x: W * 0.65, y: H * 0.55, vx: 0, vy: 0, on: true };
     this.retarget = 0;
-    this.blink = 1.2 + Math.random() * 0.6;
+    this.blink = 1.8 + Math.random() * 0.8;
     this.sigG = this.add.graphics();
 
     this.lap = { x: 190, y: 300 };
@@ -531,7 +548,7 @@ class WlanFangen extends MicroGame {
     this.up = this.add.rectangle(166, 62, 468, 10, COL.good).setOrigin(0, 0).setDepth(21);
     this.up.scaleX = 0;
     this.prog = 0;
-    this.need = 2.4 / this.spd;
+    this.need = 1.8 / this.spd;
 
     this.keys = this.input.keyboard.createCursorKeys();
     this.drawAll(false);
@@ -554,7 +571,7 @@ class WlanFangen extends MicroGame {
     const s = this.sig;
     this.retarget -= dt;
     if (this.retarget <= 0) {
-      const a = Math.random() * Math.PI * 2, sp = (110 + Math.random() * 90) * this.spd;
+      const a = Math.random() * Math.PI * 2, sp = (100 + Math.random() * 75) * this.spd;
       s.vx = Math.cos(a) * sp; s.vy = Math.sin(a) * sp;
       this.retarget = 0.45 + Math.random() * 0.6;
     }
@@ -566,7 +583,7 @@ class WlanFangen extends MicroGame {
     // eduroam-Aussetzer: Signal verschwindet und taucht woanders auf
     this.blink -= dt;
     if (this.blink <= 0 && s.on) {
-      this.blink = 1.3 + Math.random();
+      this.blink = 1.9 + Math.random();
       s.on = false;
       this.time.delayedCall(320 / this.spd, () => { Object.assign(s, this.randomSpot()); s.on = true; });
     }
@@ -601,6 +618,17 @@ class WlanFangen extends MicroGame {
     l.fillStyle(inside ? COL.good : 0x6B7A82).fillRect(x - 22, y - 18, 44, 24);
     l.fillStyle(0x9BA4A8).fillRect(x - 32, y + 10, 64, 6);
   }
+  onLose() {   // Upload bricht ab, Fehlermeldung ploppt auf
+    this.loseDelay = 1300;
+    this.up.setFillStyle(COL.alarm);
+    this.status.setText('Netzwerkfehler').setColor('#E2382B');
+    this.tweens.add({ targets: this.up, scaleX: 0, duration: 600, ease: 'Quad.easeIn' });
+    const box = this.add.container(Phaser.Math.Clamp(this.lap.x, 85, W - 85), this.lap.y - 52, [
+      this.add.rectangle(0, 0, 160, 34, COL.alarm).setStrokeStyle(3, COL.ink),
+      this.add.text(0, 0, 'ERR_TIMED_OUT', { fontFamily: BODY, fontSize: '20px', color: '#F5F7F2' }).setOrigin(0.5)
+    ]).setDepth(30).setScale(0);
+    this.tweens.add({ targets: box, scale: 1, duration: 240, ease: 'Back.easeOut' });
+  }
 }
 
 // ============================================================
@@ -626,7 +654,7 @@ class Sitzplatz extends MicroGame {
     this.seats = [];
     const all = [];
     rowsY.forEach((y, r) => { for (let i = 0; i < 7; i++) all.push({ x: 160 + i * 80, y, row: r }); });
-    const freeIdx = Phaser.Utils.Array.Shuffle([...all.keys()]).slice(0, 5);
+    const freeIdx = Phaser.Utils.Array.Shuffle([...all.keys()]).slice(0, 4);
     all.forEach((s, i) => {
       s.taken = !freeIdx.includes(i);
       s.chair = this.add.rectangle(s.x, s.y, 36, 30, COL.chair).setStrokeStyle(3, COL.ink);
@@ -635,10 +663,10 @@ class Sitzplatz extends MicroGame {
     });
 
     this.rivals = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
       const x = Phaser.Math.Between(60, 740), y = Phaser.Math.Between(395, 425);
       const c = this.add.circle(x, y, 12, Phaser.Utils.Array.GetRandom(STUDENT_COLORS)).setStrokeStyle(2, COL.ink);
-      this.rivals.push({ x, y, c, v: (85 + Math.random() * 40) * this.spd, delay: Math.random() * 0.45, target: null, seated: false });
+      this.rivals.push({ x, y, c, v: (130 + Math.random() * 50) * this.spd, delay: Math.random() * 0.15, target: null, seated: false });
     }
 
     this.pl = { x: 400, y: 412 };
@@ -653,7 +681,7 @@ class Sitzplatz extends MicroGame {
   updateFree() { this.freeTxt.setText('FREI: ' + this.free().length); }
   step(dt) {
     // Spieler
-    const k = this.keys, v = 250 * this.spd * dt;
+    const k = this.keys, v = 210 * this.spd * dt;
     const kx = (k.right.isDown ? 1 : 0) - (k.left.isDown ? 1 : 0), ky = (k.down.isDown ? 1 : 0) - (k.up.isDown ? 1 : 0);
     if (kx || ky) {
       const n = Math.hypot(kx, ky);
@@ -690,6 +718,18 @@ class Sitzplatz extends MicroGame {
       }
     }
     if (!this.free().length) this.lose('Alle Plätze weg. Boden it is.');
+  }
+  onWin() {   // Hineinplumpsen
+    this.tweens.add({ targets: [this.plC, this.plL], scaleX: 1.3, scaleY: 0.75, duration: 110, yoyo: true, ease: 'Quad.easeOut' });
+  }
+  onLose() {   // Auf den Boden plumpsen, die anderen feixen
+    this.loseDelay = 1500;
+    this.tweens.add({ targets: [this.plC, this.plL], scaleX: 1.35, scaleY: 0.65, duration: 140, hold: 160, yoyo: true, ease: 'Quad.easeOut' });
+    const t = txt(this, this.pl.x, this.pl.y - 34, 'BODEN.', 14, '#E2382B', { stroke: '#F5F7F2', strokeThickness: 5 }).setDepth(7).setScale(0);
+    this.tweens.add({ targets: t, scale: 1, duration: 260, ease: 'Back.easeOut' });
+    for (const r of this.rivals) {
+      if (r.seated) this.tweens.add({ targets: r.c, y: r.c.y - 6, duration: 110, yoyo: true, repeat: 2, delay: Math.random() * 250 });
+    }
   }
 }
 
@@ -862,7 +902,7 @@ class Fluchttreppe extends MicroGame {
     }
   }
   drawFire() {
-    const g = this.fireG, top = this.PY + this.fireDist, t = this.left / 1000;
+    const g = this.fireG, top = this.PY + this.fireDist, t = this.time.now / 1000;
     g.clear();
     g.fillStyle(0xB3261E).fillRect(0, top, W, H - top + 10);
     for (let x = -10; x < W + 20; x += 34) {
@@ -905,6 +945,59 @@ class Fluchttreppe extends MicroGame {
     this.drawFire();
     if (this.fireDist <= 14) this.lose('Vom Feuer eingeholt. Zu oft gestolpert.');
   }
+  onLose() {   // Flammen schlagen über, verkohlt, zerfällt zu Asche
+    this.loseDelay = 2700;
+    const p = this.player, px = p.x, py = this.PY;
+    Sfx.burn();
+    p.setScale(1).setAlpha(1).setY(py);
+    this.shadow.setVisible(false);
+    onFrame(this, () => this.drawFire());
+    this.cameras.main.pan(px, py - 20, 700, 'Quad.easeOut');
+    this.cameras.main.zoomTo(1.6, 700, 'Quad.easeOut');
+
+    // Panik-Zappeln, während das Feuer hochschießt
+    this.tweens.add({ targets: p, scaleX: 1.2, scaleY: 0.85, duration: 70, yoyo: true, repeat: 3 });
+    this.tweens.add({ targets: this, fireDist: -50, duration: 380, ease: 'Quad.easeIn' });
+    this.tweens.add({ targets: this, fireDist: 80, duration: 650, delay: 750, ease: 'Quad.easeOut' });
+
+    // Verkohlte Version + Cartoon-Augen, versteckt bis das Feuer zurückweicht
+    const char = this.add.graphics().setAlpha(0);
+    char.fillStyle(0x1A1410).fillRoundedRect(-10, 2, 20, 13, 3).fillEllipse(0, 0, 40, 24).fillCircle(0, -3, 10);
+    const eyes = this.add.container(0, -4, [this.add.circle(-4, 0, 2.6, 0xFFFFFF), this.add.circle(4, 0, 2.6, 0xFFFFFF)]).setScale(1, 0);
+    p.add([char, eyes]);
+    this.time.delayedCall(380, () => char.setAlpha(1));
+    this.time.delayedCall(1250, () => this.tweens.add({ targets: eyes, scaleY: 1, duration: 90 }));
+    this.time.delayedCall(1650, () => this.tweens.add({ targets: eyes, scaleY: 0, duration: 70, yoyo: true }));
+
+    // Funkenflug
+    this.time.addEvent({ delay: 45, repeat: 40, callback: () => {
+      const e = this.add.rectangle(px + Phaser.Math.Between(-30, 30), py + Phaser.Math.Between(-5, 20), 3, 3,
+        Phaser.Utils.Array.GetRandom([COL.hazard, 0xFF8A1E, COL.alarm])).setDepth(17);
+      this.tweens.add({ targets: e, y: e.y - Phaser.Math.Between(40, 100), x: e.x + Phaser.Math.Between(-25, 25), angle: 180, alpha: 0,
+        duration: Phaser.Math.Between(500, 900), onComplete: () => e.destroy() });
+    } });
+
+    // Rauch, sobald man wieder etwas sieht
+    this.time.delayedCall(950, () => this.time.addEvent({ delay: 110, repeat: 14, callback: () => {
+      const s = this.add.circle(px + Phaser.Math.Between(-8, 8), py - 8, 6, 0x555555, 0.7).setDepth(16);
+      this.tweens.add({ targets: s, y: s.y - 70, x: s.x + Phaser.Math.Between(-15, 15), scale: 3, alpha: 0, duration: 1100, onComplete: () => s.destroy() });
+    } }));
+
+    // Zerfällt zu einem Häufchen Asche
+    this.time.delayedCall(1950, () => {
+      this.tweens.add({ targets: p, scaleY: 0.2, scaleX: 1.3, alpha: 0, duration: 380, ease: 'Quad.easeIn' });
+      const ash = this.add.graphics({ x: px, y: py + 6 }).setDepth(9).setScale(0);
+      ash.fillStyle(0x3A3A3A).fillEllipse(0, 0, 40, 14);
+      ash.fillStyle(0x5A5A5A).fillEllipse(-4, -3, 22, 8);
+      this.tweens.add({ targets: ash, scale: 1, duration: 300, ease: 'Back.easeOut' });
+      for (let i = 0; i < 8; i++) {
+        const a = this.add.rectangle(px, py, 3, 3, 0x6A6A6A).setDepth(11);
+        this.tweens.add({ targets: a, x: px + Phaser.Math.Between(-28, 28), y: py + Phaser.Math.Between(0, 10), alpha: 0, duration: 450, ease: 'Quad.easeOut' });
+      }
+      const t = txt(this, px, py - 36, 'KROSS.', 14, '#FFC61A', { stroke: '#10231A', strokeThickness: 5 }).setDepth(20).setScale(0);
+      this.tweens.add({ targets: t, scale: 1, duration: 220, delay: 200, ease: 'Back.easeOut' });
+    });
+  }
 }
 
 // ============================================================
@@ -916,7 +1009,8 @@ class Speichern extends MicroGame {
   }
   setup() {
     this.prog = 0;
-    this.inc = 0.075 * Math.sqrt(this.spd);
+    this.inc = 0.055 * Math.sqrt(this.spd);
+    this.decay = 0.12 * this.spd;   // Word hängt: Fortschritt rutscht zurück, wenn man nachlässt
     const c = this.lapC = this.add.container(400, 392);
     const g = this.add.graphics();
     g.fillStyle(0x2B2B2B).fillRoundedRect(-190, -310, 380, 262, 12);
@@ -954,6 +1048,11 @@ class Speichern extends MicroGame {
     }
   }
   step(dt) {
+    if (!this.done && this.prog > 0 && dt > 0) {
+      this.prog = Math.max(0, this.prog - this.decay * dt);
+      this.bar2.scaleX = this.prog;
+      this.lbl.setText(this.prog > 0 ? 'Speichern … ' + Math.round(this.prog * 100) + ' %' : 'Nicht gespeichert');
+    }
     const frac = Math.max(0, this.left / this.total);
     const blink = frac < 0.35 && Math.floor(this.left / 150) % 2 === 0;
     this.batG.clear();
