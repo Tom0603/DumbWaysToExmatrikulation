@@ -1,0 +1,1125 @@
+<title>DHBW Survival</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=Bungee&display=swap">
+<style>
+  /* Layout: one-screen arcade cabinet; Rettungszeichen-Grün + Warnstreifen-Gelb, single dark look */
+  :root {
+    --ink: #10231A;
+    --exit: #1E8A4C;
+    --paper: #F5F7F2;
+    --hazard: #FFC61A;
+    --alarm: #E2382B;
+    --muted: #9DB5A6;
+    --display: "Bungee", Impact, "Arial Black", sans-serif;
+    --body: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--body);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-block: 12px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  header { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+  .tag {
+    font-family: var(--display);
+    font-size: 15px;
+    letter-spacing: .04em;
+    background: var(--exit);
+    color: var(--paper);
+    padding: 4px 10px;
+    border-radius: 3px;
+  }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  #game { flex: 1 1 auto; min-height: 220px; position: relative; overflow: hidden; }
+  footer { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  kbd {
+    font-family: var(--body);
+    font-size: 12px;
+    color: var(--paper);
+    border: 1px solid var(--muted);
+    border-radius: 3px;
+    padding: 0 5px;
+  }
+</style>
+
+<header>
+  <span class="tag">DHBW SURVIVAL</span>
+  <p>Prototyp · Phaser 3 · 6 Minigames, alle 5 Runden wird's schneller</p>
+</header>
+<div id="game"></div>
+<footer>
+  <span>Steuerung: Maus / Touch, <kbd>Leertaste</kbd>, <kbd>Pfeiltasten</kbd></span>
+  <span>Im Hörsaal ohne WLAN: <kbd>phaser.min.js</kbd> lokal neben die HTML legen</span>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+<script>
+// ============================================================
+//  DHBW SURVIVAL – WarioWare-Klon (Prototyp)
+//  Neues Minigame: Klasse von MicroGame ableiten, setup() + step(dt)
+//  schreiben, in GAME_KEYS und in config.scene eintragen. Fertig.
+// ============================================================
+const W = 800, H = 450;
+const COL = {
+  ink: 0x10231A, exit: 0x1E8A4C, paper: 0xF5F7F2, hazard: 0xFFC61A,
+  alarm: 0xE2382B, good: 0x3FD07A, slate: 0x24323A, wall: 0xD7DDD3,
+  floor: 0xC2B08F, chair: 0x2E5E8C, skin: 0xE8B88E
+};
+const STUDENT_COLORS = [0xE2382B, 0x7A4FB5, 0x2C9C8F, 0xD9822B, 0x4466CC];
+const FONT = '"Bungee", Impact, "Arial Black", sans-serif';
+const BODY = '"Archivo", "Helvetica Neue", Arial, sans-serif';
+const GAME_KEYS = ['FensterZu', 'WlanFangen', 'Sitzplatz', 'Fluchttreppe', 'Speichern', 'KloFinden'];
+
+// ---------- Spielstand ----------
+const State = { lives: 4, score: 0, round: 0, speed: 1, result: null, bag: [], last: null, best: 0 };
+try { State.best = parseInt(localStorage.getItem('dhbw-survival-best'), 10) || 0; } catch (e) {}
+
+function resetRun() {
+  Object.assign(State, { lives: 4, score: 0, round: 0, speed: 1, result: null, bag: [], last: null });
+}
+function nextGameKey() {
+  if (!State.bag.length) {
+    State.bag = Phaser.Utils.Array.Shuffle(GAME_KEYS.slice());
+    if (State.bag[0] === State.last) State.bag.push(State.bag.shift());
+  }
+  State.last = State.bag.shift();
+  return State.last;
+}
+
+// ---------- Sound (WebAudio, keine Assets nötig) ----------
+const Sfx = {
+  ctx: null,
+  init() {
+    try {
+      if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+    } catch (e) { this.ctx = null; }
+  },
+  tone(freq, dur = 0.1, type = 'square', vol = 0.06, slide = 0) {
+    const c = this.ctx; if (!c) return;
+    const o = c.createOscillator(), g = c.createGain(), t = c.currentTime;
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + dur + 0.02);
+  },
+  seq(notes, gap = 80, dur = 0.11) { notes.forEach((f, i) => setTimeout(() => this.tone(f, dur), i * gap)); },
+  win() { this.seq([523, 659, 784, 1046]); },
+  lose() { this.tone(320, 0.45, 'sawtooth', 0.07, -240); },
+  tick() { this.tone(980, 0.04, 'square', 0.035); },
+  blip() { this.tone(660, 0.05, 'square', 0.04); },
+  faster() { this.seq([392, 523, 659, 784, 1046, 1318], 60, 0.08); },
+  over() { this.seq([392, 330, 262, 196], 180, 0.25); }
+};
+
+// ---------- Helfer ----------
+function txt(scene, x, y, s, size, color = '#F5F7F2', extra = {}) {
+  return scene.add.text(x, y, s, Object.assign({ fontFamily: FONT, fontSize: size + 'px', color, align: 'center' }, extra)).setOrigin(0.5);
+}
+function body(scene, x, y, s, size, color = '#F5F7F2', extra = {}) {
+  return scene.add.text(x, y, s, Object.assign({ fontFamily: BODY, fontSize: size + 'px', color, align: 'center' }, extra)).setOrigin(0.5);
+}
+function hazard(scene, y, h) {
+  const g = scene.add.graphics();
+  g.fillStyle(COL.hazard).fillRect(0, y, W, h);
+  g.fillStyle(COL.ink);
+  for (let x = -h; x < W + h; x += 36) {
+    g.fillPoints([{ x, y: y + h }, { x: x + h, y }, { x: x + h + 16, y }, { x: x + 16, y: y + h }], true);
+  }
+  return g;
+}
+function drawBattery(g, x, y, frac, fill, stroke = COL.paper) {
+  g.lineStyle(3, stroke).strokeRect(x, y, 44, 22);
+  g.fillStyle(stroke).fillRect(x + 44, y + 6, 5, 10);
+  if (frac > 0) g.fillStyle(fill).fillRect(x + 4, y + 4, 36 * Math.min(1, frac), 14);
+}
+
+// ============================================================
+//  Basisklasse für alle Minigames
+// ============================================================
+class MicroGame extends Phaser.Scene {
+  // meta: { title, hint, duration (ms), bg, survive (Zeit überleben = Sieg), timeoutMsg }
+  constructor(key, meta) { super(key); this.meta = meta; }
+
+  create() {
+    this.done = false;
+    this.spd = State.speed;
+    this.total = this.meta.duration / this.spd;
+    this.left = this.total;
+    this.lastSec = 99;
+    this.cameras.main.setBackgroundColor(this.meta.bg);
+    this.events.once('shutdown', () => {
+      this.input.removeAllListeners();
+      this.input.keyboard.removeAllListeners();
+    });
+    this.input.keyboard.addCapture('SPACE,UP,DOWN,LEFT,RIGHT');
+
+    this.setup();
+
+    // Zündschnur unten
+    this.add.rectangle(0, H - 12, W, 12, COL.ink).setOrigin(0, 0).setDepth(90);
+    this.bar = this.add.rectangle(0, H - 12, W, 12, COL.hazard).setOrigin(0, 0).setDepth(91);
+    this.add.text(W / 2, H - 18, this.meta.hint, {
+      fontFamily: BODY, fontSize: '15px', fontStyle: '600', color: '#F5F7F2',
+      backgroundColor: '#10231A', padding: { x: 10, y: 4 }
+    }).setOrigin(0.5, 1).setDepth(92);
+
+    // Große Ansage
+    const t = txt(this, W / 2, H / 2 - 20, this.meta.title, 62, '#FFC61A', { stroke: '#10231A', strokeThickness: 12 }).setDepth(100);
+    const s0 = Math.min(1, (W - 40) / t.width);
+    t.setScale(s0 * 2);
+    this.tweens.add({ targets: t, scale: s0, duration: 220, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: t, alpha: 0, y: t.y - 40, delay: 620, duration: 240, ease: 'Quad.easeIn' });
+  }
+
+  update(time, delta) {
+    if (this.done) return;
+    const dt = Math.min(delta, 50) / 1000;
+    this.left -= delta;
+    const frac = Math.max(0, this.left / this.total);
+    this.bar.scaleX = frac;
+    if (this.left < 1000) this.bar.setFillStyle(COL.alarm);
+    const sec = Math.ceil(this.left / 1000);
+    if (sec <= 3 && sec < this.lastSec && sec > 0) { this.lastSec = sec; Sfx.tick(); }
+
+    this.step(dt);
+
+    if (!this.done && this.left <= 0) {
+      if (this.meta.survive) this.win(this.meta.winMsg || 'Überlebt!');
+      else this.lose(this.meta.timeoutMsg || 'Zu langsam!');
+    }
+  }
+
+  win(msg) {
+    if (this.done) return;
+    this.done = true;
+    State.result = { ok: true, msg };
+    Sfx.win();
+    if (this.onWin) this.onWin();
+    this.cameras.main.flash(180, 63, 208, 122);
+    this.time.delayedCall(750, () => this.scene.start('Transition'));
+  }
+
+  lose(msg) {
+    if (this.done) return;
+    this.done = true;
+    State.result = { ok: false, msg };
+    Sfx.lose();
+    if (this.onLose) this.onLose();
+    this.cameras.main.shake(260, 0.012);
+    this.time.delayedCall(750, () => this.scene.start('Transition'));
+  }
+
+  // Klick/Tap oder Leertaste
+  onAction(fn) {
+    this.input.on('pointerdown', () => fn());
+    this.input.keyboard.on('keydown-SPACE', e => { if (!e.repeat) fn(); });
+  }
+
+  setup() {}
+  step(dt) {}
+}
+
+// ============================================================
+//  1) FENSTER ZU! – Timing
+// ============================================================
+class FensterZu extends MicroGame {
+  constructor() {
+    super('FensterZu', { title: 'FENSTER ZU!', hint: 'Tippen, wenn es GENAU zu ist', duration: 4200, bg: COL.wall, timeoutMsg: 'Zu lange gezögert. Es zieht.' });
+  }
+  setup() {
+    this.p = 0; this.dir = 1; this.locked = false;
+    this.win_ = { x: 150, y: 60, w: 270, h: 250 };
+    this.zone = [0.86, 0.94];
+
+    // Heizkörper unterm Fenster
+    const deco = this.add.graphics();
+    deco.fillStyle(0xBFC7BC).fillRect(165, 330, 240, 22);
+    deco.lineStyle(2, 0x9AA396);
+    for (let x = 175; x < 400; x += 14) deco.lineBetween(x, 332, x, 350);
+
+    this.gWin = this.add.graphics();
+
+    // Messleiste
+    const m = this.m = { x: 150, y: 372, w: 500, h: 24 };
+    const g = this.add.graphics();
+    g.fillStyle(COL.ink).fillRect(m.x - 4, m.y - 4, m.w + 8, m.h + 8);
+    g.fillStyle(0x7D8A80).fillRect(m.x, m.y, m.w, m.h);
+    g.fillStyle(COL.good).fillRect(m.x + m.w * this.zone[0], m.y, m.w * (this.zone[1] - this.zone[0]), m.h);
+    g.fillStyle(COL.alarm).fillRect(m.x + m.w * this.zone[1], m.y, m.w * (1 - this.zone[1]), m.h);
+    body(this, m.x + 20, m.y - 14, 'offen', 13, '#10231A');
+    body(this, m.x + m.w * 0.9, m.y - 14, '100 % ZU', 13, '#10231A', { fontStyle: '800' });
+    body(this, m.x + m.w + 8, m.y - 14, 'zu fest', 13, '#E2382B', { fontStyle: '800' });
+    this.marker = this.add.rectangle(m.x, m.y + m.h / 2, 8, m.h + 18, COL.ink);
+
+    // Lüftung
+    const house = this.add.graphics();
+    house.fillStyle(0xB8C1B6).fillRect(560, 70, 150, 150);
+    house.lineStyle(5, COL.ink).strokeRect(560, 70, 150, 150);
+    house.fillStyle(0x56625A).fillCircle(635, 145, 62);
+    this.fan = this.add.graphics({ x: 635, y: 145 });
+    this.fan.fillStyle(0xD7DDD3);
+    for (let i = 0; i < 3; i++) {
+      const a = i * Math.PI * 2 / 3;
+      const pt = (r, da) => ({ x: Math.cos(a + da) * r, y: Math.sin(a + da) * r });
+      this.fan.fillPoints([{ x: 0, y: 0 }, pt(56, -0.28), pt(58, 0.22)], true);
+    }
+    this.fan.fillStyle(COL.ink).fillCircle(0, 0, 9);
+    this.fanTxt = txt(this, 635, 245, 'LÜFTUNG: AUS', 18, '#E2382B');
+
+    this.onAction(() => this.press());
+    this.drawWindow();
+  }
+  drawWindow() {
+    const g = this.gWin, { x, y, w, h } = this.win_;
+    const gap = (1 - this.p) * 90, sw = w - gap;
+    g.clear();
+    g.fillStyle(0x8EC6E6).fillRect(x, y, w, h);              // draußen
+    g.fillStyle(0xFFFFFF, 0.8).fillCircle(x + w - 30, y + 60, 16).fillCircle(x + w - 50, y + 66, 13);
+    g.fillStyle(0xCDE9F3).fillRect(x + 6, y + 6, sw - 12, h - 12);   // Glas
+    g.lineStyle(10, COL.paper).strokeRect(x + 5, y + 5, sw - 10, h - 10);
+    g.fillStyle(COL.ink).fillRect(x + sw - 26, y + h / 2 - 20, 8, 40); // Griff
+    if (gap > 8) {                                              // Zugluft
+      g.lineStyle(3, COL.paper, 0.9);
+      for (let i = 0; i < 3; i++) g.lineBetween(x + sw + 4, y + 70 + i * 50, x + sw - 40, y + 80 + i * 50);
+    }
+    g.lineStyle(10, 0x5B6B60).strokeRect(x, y, w, h);           // Rahmen
+    g.fillStyle(0x9AA396).fillRect(x - 16, y + h, w + 32, 12);   // Fensterbank
+  }
+  step(dt) {
+    if (this.locked) return;
+    this.p += this.dir * dt / (0.95 / this.spd);
+    if (this.p >= 1) { this.p = 1; this.dir = -1; }
+    if (this.p <= 0) { this.p = 0; this.dir = 1; }
+    this.marker.x = this.m.x + this.m.w * this.p;
+    this.drawWindow();
+  }
+  press() {
+    if (this.locked || this.done) return;
+    this.locked = true;
+    if (this.p >= this.zone[0] && this.p <= this.zone[1]) {
+      this.p = 1; this.drawWindow();
+      this.fanTxt.setText('LÜFTUNG: AN').setColor('#1E8A4C');
+      this.tweens.add({ targets: this.fan, angle: 1440, duration: 1100, ease: 'Quad.easeIn' });
+      this.win('Lüftung läuft. Zum ersten Mal seit Jahren.');
+    } else {
+      const msg = this.p > this.zone[1] ? 'Zu fest gedrückt. Fenster springt wieder auf.' : 'Nicht ganz zu. Lüftung bleibt aus.';
+      this.tweens.addCounter({ from: this.p, to: 0, duration: 260, ease: 'Back.easeOut', onUpdate: tw => { this.p = tw.getValue(); this.drawWindow(); } });
+      this.lose(msg);
+    }
+  }
+}
+
+// ============================================================
+//  2) WLAN FANGEN! – Verfolgen
+// ============================================================
+class WlanFangen extends MicroGame {
+  constructor() {
+    super('WlanFangen', { title: 'WLAN FANGEN!', hint: 'Laptop ins Signal halten, bis der Upload durch ist', duration: 5200, bg: COL.slate, timeoutMsg: 'Upload abgebrochen. eduroam halt.' });
+  }
+  setup() {
+    const bg = this.add.graphics();
+    bg.lineStyle(10, 0x2E3F48);
+    for (let y = 140; y < 420; y += 60) bg.lineBetween(30, y, 770, y);   // Sitzreihen
+
+    this.r = Math.max(50, 74 - (this.spd - 1) * 40);
+    this.sig = { x: W * 0.65, y: H * 0.55, vx: 0, vy: 0, on: true };
+    this.retarget = 0;
+    this.blink = 1.2 + Math.random() * 0.6;
+    this.sigG = this.add.graphics();
+
+    this.lap = { x: 190, y: 300 };
+    this.tgt = { x: 190, y: 300 };
+    this.lapG = this.add.graphics().setDepth(5);
+
+    // Upload-Fenster
+    const p = this.add.graphics().setDepth(20);
+    p.fillStyle(COL.ink).fillRoundedRect(150, 22, 500, 62, 6);
+    p.fillStyle(0x3A4A52).fillRect(166, 62, 468, 10);
+    this.add.text(166, 32, 'abgabe_final_v3_WIRKLICH_final.zip', { fontFamily: BODY, fontSize: '14px', fontStyle: '600', color: '#F5F7F2' }).setDepth(21);
+    this.status = this.add.text(634, 33, '', { fontFamily: BODY, fontSize: '13px', color: '#E2382B' }).setOrigin(1, 0).setDepth(21);
+    this.up = this.add.rectangle(166, 62, 468, 10, COL.good).setOrigin(0, 0).setDepth(21);
+    this.up.scaleX = 0;
+    this.prog = 0;
+    this.need = 2.4 / this.spd;
+
+    const follow = ptr => { this.tgt.x = ptr.x; this.tgt.y = ptr.y; };
+    this.input.on('pointermove', follow);
+    this.input.on('pointerdown', follow);
+    this.keys = this.input.keyboard.createCursorKeys();
+    this.drawAll(false);
+  }
+  randomSpot() {
+    return { x: Phaser.Math.Between(this.r + 20, W - this.r - 20), y: Phaser.Math.Between(100 + this.r, H - 36 - this.r) };
+  }
+  step(dt) {
+    const k = this.keys, mv = 340 * dt;
+    if (k.left.isDown) this.tgt.x -= mv;
+    if (k.right.isDown) this.tgt.x += mv;
+    if (k.up.isDown) this.tgt.y -= mv;
+    if (k.down.isDown) this.tgt.y += mv;
+    this.tgt.x = Phaser.Math.Clamp(this.tgt.x, 30, W - 30);
+    this.tgt.y = Phaser.Math.Clamp(this.tgt.y, 100, H - 40);
+    const f = Math.min(1, dt * 12);
+    this.lap.x += (this.tgt.x - this.lap.x) * f;
+    this.lap.y += (this.tgt.y - this.lap.y) * f;
+
+    const s = this.sig;
+    this.retarget -= dt;
+    if (this.retarget <= 0) {
+      const a = Math.random() * Math.PI * 2, sp = (110 + Math.random() * 90) * this.spd;
+      s.vx = Math.cos(a) * sp; s.vy = Math.sin(a) * sp;
+      this.retarget = 0.45 + Math.random() * 0.6;
+    }
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    const minX = this.r + 10, maxX = W - this.r - 10, minY = 96 + this.r, maxY = H - 34 - this.r;
+    if (s.x < minX || s.x > maxX) { s.vx *= -1; s.x = Phaser.Math.Clamp(s.x, minX, maxX); }
+    if (s.y < minY || s.y > maxY) { s.vy *= -1; s.y = Phaser.Math.Clamp(s.y, minY, maxY); }
+
+    // eduroam-Aussetzer: Signal verschwindet und taucht woanders auf
+    this.blink -= dt;
+    if (this.blink <= 0 && s.on) {
+      this.blink = 1.3 + Math.random();
+      s.on = false;
+      this.time.delayedCall(320 / this.spd, () => { Object.assign(s, this.randomSpot()); s.on = true; });
+    }
+
+    const inside = s.on && Phaser.Math.Distance.Between(s.x, s.y, this.lap.x, this.lap.y) < this.r;
+    if (inside) this.prog += dt / this.need;
+    this.up.scaleX = Math.min(1, this.prog);
+    this.status.setText(inside ? 'verbunden' : (s.on ? 'Verbindung getrennt' : 'eduroam sucht …'));
+    this.status.setColor(inside ? '#3FD07A' : '#E2382B');
+    this.drawAll(inside);
+
+    if (this.prog >= 1) this.win('Abgabe hochgeladen. Um 23:59.');
+  }
+  drawAll(inside) {
+    const g = this.sigG, s = this.sig;
+    g.clear();
+    if (s.on) {
+      const c = inside ? COL.good : COL.hazard;
+      g.fillStyle(c, 0.16).fillCircle(s.x, s.y, this.r);
+      g.lineStyle(3, c, 0.7).strokeCircle(s.x, s.y, this.r);
+      g.lineStyle(5, c);
+      for (let i = 1; i <= 3; i++) {
+        g.beginPath();
+        g.arc(s.x, s.y + 14, i * 11, -Math.PI * 0.78, -Math.PI * 0.22, false);
+        g.strokePath();
+      }
+      g.fillStyle(c).fillCircle(s.x, s.y + 14, 4);
+    }
+    const l = this.lapG, { x, y } = this.lap;
+    l.clear();
+    l.fillStyle(0x1A1A1A).fillRoundedRect(x - 26, y - 22, 52, 32, 3);
+    l.fillStyle(inside ? COL.good : 0x6B7A82).fillRect(x - 22, y - 18, 44, 24);
+    l.fillStyle(0x9BA4A8).fillRect(x - 32, y + 10, 64, 6);
+  }
+}
+
+// ============================================================
+//  3) PLATZ FINDEN! – Wettrennen
+// ============================================================
+class Sitzplatz extends MicroGame {
+  constructor() {
+    super('Sitzplatz', { title: 'PLATZ FINDEN!', hint: 'Lauf zu einem freien Stuhl', duration: 4600, bg: COL.floor, timeoutMsg: 'Stehplatz. Wie jede Woche.' });
+  }
+  setup() {
+    const g = this.add.graphics();
+    g.fillStyle(COL.paper).fillRect(270, 8, 260, 16);           // Tafel
+    g.lineStyle(3, COL.ink).strokeRect(270, 8, 260, 16);
+    g.fillStyle(COL.exit).fillRect(20, 396, 46, 40).fillRect(734, 396, 46, 40); // Türen
+    body(this, 400, 38, 'Prof. gleich da', 13, '#10231A');
+
+    const rowsY = [115, 190, 265];
+    rowsY.forEach((y, r) => {
+      if (r < 2) g.fillStyle(0x8B6B47).fillRect(125, y - 34, 550, 12);   // Tische
+    });
+    body(this, 80, 265, 'ohne\nTisch', 12, '#10231A', { fontStyle: '800' });
+
+    this.seats = [];
+    const all = [];
+    rowsY.forEach((y, r) => { for (let i = 0; i < 7; i++) all.push({ x: 160 + i * 80, y, row: r }); });
+    const freeIdx = Phaser.Utils.Array.Shuffle([...all.keys()]).slice(0, 5);
+    all.forEach((s, i) => {
+      s.taken = !freeIdx.includes(i);
+      s.chair = this.add.rectangle(s.x, s.y, 36, 30, COL.chair).setStrokeStyle(3, COL.ink);
+      if (s.taken) this.add.circle(s.x, s.y, 12, Phaser.Utils.Array.GetRandom(STUDENT_COLORS)).setStrokeStyle(2, COL.ink);
+      this.seats.push(s);
+    });
+
+    this.rivals = [];
+    for (let i = 0; i < 6; i++) {
+      const x = Phaser.Math.Between(60, 740), y = Phaser.Math.Between(395, 425);
+      const c = this.add.circle(x, y, 12, Phaser.Utils.Array.GetRandom(STUDENT_COLORS)).setStrokeStyle(2, COL.ink);
+      this.rivals.push({ x, y, c, v: (85 + Math.random() * 40) * this.spd, delay: Math.random() * 0.45, target: null, seated: false });
+    }
+
+    this.pl = { x: 400, y: 412 };
+    this.tgt = { x: 400, y: 412 };
+    this.plC = this.add.circle(400, 412, 15, COL.hazard).setStrokeStyle(4, COL.ink).setDepth(5);
+    this.plL = body(this, 400, 412, 'DU', 11, '#10231A', { fontStyle: '800' }).setDepth(6);
+
+    this.freeTxt = this.add.text(780, 10, '', { fontFamily: FONT, fontSize: '20px', color: '#10231A' }).setOrigin(1, 0);
+    const go = ptr => { this.tgt.x = ptr.x; this.tgt.y = ptr.y; };
+    this.input.on('pointerdown', go);
+    this.input.on('pointermove', ptr => { if (ptr.isDown) go(ptr); });
+    this.keys = this.input.keyboard.createCursorKeys();
+    this.updateFree();
+  }
+  free() { return this.seats.filter(s => !s.taken); }
+  updateFree() { this.freeTxt.setText('FREI: ' + this.free().length); }
+  step(dt) {
+    // Spieler
+    const k = this.keys, v = 250 * this.spd * dt;
+    let kx = (k.right.isDown ? 1 : 0) - (k.left.isDown ? 1 : 0), ky = (k.down.isDown ? 1 : 0) - (k.up.isDown ? 1 : 0);
+    if (kx || ky) {
+      const n = Math.hypot(kx, ky);
+      this.pl.x += kx / n * v; this.pl.y += ky / n * v;
+      this.tgt.x = this.pl.x; this.tgt.y = this.pl.y;
+    } else {
+      const dx = this.tgt.x - this.pl.x, dy = this.tgt.y - this.pl.y, d = Math.hypot(dx, dy);
+      if (d > 1) { const m = Math.min(d, v); this.pl.x += dx / d * m; this.pl.y += dy / d * m; }
+    }
+    this.pl.x = Phaser.Math.Clamp(this.pl.x, 20, W - 20);
+    this.pl.y = Phaser.Math.Clamp(this.pl.y, 60, H - 30);
+    this.plC.setPosition(this.pl.x, this.pl.y);
+    this.plL.setPosition(this.pl.x, this.pl.y);
+
+    // Konkurrenz
+    for (const r of this.rivals) {
+      if (r.seated) continue;
+      if (r.delay > 0) { r.delay -= dt; continue; }
+      if (!r.target || r.target.taken) {
+        const f = this.free();
+        if (!f.length) continue;
+        f.sort((a, b) => Phaser.Math.Distance.Between(r.x, r.y, a.x, a.y) - Phaser.Math.Distance.Between(r.x, r.y, b.x, b.y));
+        r.target = Phaser.Utils.Array.GetRandom(f.slice(0, 3));
+      }
+      const dx = r.target.x - r.x, dy = r.target.y - r.y, d = Math.hypot(dx, dy), m = Math.min(d, r.v * dt);
+      r.x += dx / d * m; r.y += dy / d * m;
+      r.c.setPosition(r.x, r.y);
+      if (d < 4) { r.target.taken = true; r.seated = true; Sfx.blip(); this.updateFree(); }
+    }
+
+    // Spieler erreicht Stuhl?
+    for (const s of this.free()) {
+      if (Phaser.Math.Distance.Between(this.pl.x, this.pl.y, s.x, s.y) < 22) {
+        s.taken = true;
+        this.updateFree();
+        this.win(s.row === 2 ? 'Sitzplatz! Ohne Tisch, aber immerhin.' : 'Platz MIT Tisch. Jackpot.');
+        return;
+      }
+    }
+    if (!this.free().length) this.lose('Alle Plätze weg. Boden it is.');
+  }
+}
+
+// ============================================================
+//  4) FEUERALARM! – Top-down-Runner auf der Trichtertreppe
+//     Links gerade Wand, rechts läuft der Trichter zur Mitte zu,
+//     das nachgerüstete Geländer steckt den nutzbaren Teil ab.
+// ============================================================
+class Fluchttreppe extends MicroGame {
+  constructor() {
+    super('Fluchttreppe', { title: 'FEUERALARM!', hint: '← → ausweichen · ↑ / Leertaste springen · Wischen geht auch', duration: 6000, bg: 0x232B30, survive: true, winMsg: 'Draußen! Sammelplatz erreicht.' });
+  }
+  Y(s) { return this.PY - (s - this.sP); }          // Weltposition → Bildschirm-y (vorwärts = nach oben)
+  setup() {
+    this.LW = 150;                 // linke Wand (gerade)
+    this.RAIL = 452;               // nachgerüstetes Geländer (gerade)
+    this.EDGE0 = 760;              // Trichterkante oben am Lauf (breit)
+    this.EDGE1 = 470;              // Trichterkante unten (fast am Geländer)
+    this.FLIGHT = 1880; this.D = 1980;  // EIN langer Lauf vom 1. OG ins EG, Podest unten, dann raus
+    this.PY = 300;
+    this.lanes = [200, 300, 400];
+    this.NAMES = ['1. OG', 'EG'];
+    this.sP = 0;
+    this.v = this.D / (this.total / 1000);       // kommt genau bei Zeitende unten an
+    this.lane = 1;
+    this.jumpT = 0; this.jumpDur = 0.42;
+    this.inv = 0;
+    this.fireDist = 150;
+    this.fireCreep = 9;
+    this.hitCost = 58;
+
+    this.bgG = this.add.graphics();
+    this.labels = this.NAMES.map(n => txt(this, 0, 0, n, 24, '#10231A').setAlpha(0.5).setDepth(2));
+    this.deadLbl = [300, 1000].map(s => ({ s, t: body(this, 0, 0, 'TOTER\nTRICHTER', 12, '#F5F7F2', { fontStyle: '800' }).setAlpha(0.75).setDepth(2) }));
+    this.exitLbl = txt(this, 0, 0, 'NOTAUSGANG', 22, '#F5F7F2').setDepth(2);
+
+    // Hindernisreihen: höchstens 2 von 3 Spuren blockiert
+    this.obs = [];
+    for (let s = 380; s < this.D - 120; s += Phaser.Math.Between(105, 150)) {
+      const r = Math.random(), L = Phaser.Utils.Array.Shuffle([0, 1, 2]);
+      if (r < 0.22) this.addObs(s, 'person', [L[0]]);
+      else if (r < 0.38) this.addObs(s, 'bag', [L[0]]);
+      else if (r < 0.62) { const a = Math.random() < 0.5 ? 0 : 1; this.addObs(s, 'group', [a, a + 1]); }
+      else if (r < 0.80) { this.addObs(s, 'person', [L[0]]); this.addObs(s, 'bag', [L[1]]); }
+      else {                                                       // Spurwechsler: biegt kurz vorher ab
+        const from = L[0], to = from === 0 ? 1 : from === 2 ? 1 : (Math.random() < 0.5 ? 0 : 2);
+        this.addObs(s, 'person', [from]).wander = to;
+      }
+    }
+
+    this.shadow = this.add.ellipse(this.lanes[1], this.PY + 4, 36, 20, 0x000000, 0.3).setDepth(9);
+    const pg = this.add.graphics();
+    pg.fillStyle(0x2E5E8C).fillRoundedRect(-10, 2, 20, 13, 3);      // Rucksack
+    pg.fillStyle(COL.hazard).fillEllipse(0, 0, 38, 22);           // Schultern
+    pg.fillStyle(0x3B2A20).fillCircle(0, -3, 10);                 // Kopf von oben
+    this.player = this.add.container(this.lanes[1], this.PY, [pg]).setDepth(10);
+
+    this.heat = this.add.rectangle(0, 0, W, H, COL.alarm, 0).setOrigin(0, 0).setDepth(14);
+    this.fireG = this.add.graphics().setDepth(15);
+
+    // Steuerung
+    this.input.on('pointerdown', p => { this.sw = { x: p.x, y: p.y }; });
+    this.input.on('pointerup', p => {
+      if (!this.sw) return;
+      const dx = p.x - this.sw.x, dy = p.y - this.sw.y;
+      this.sw = null;
+      if (dy < -35 && Math.abs(dy) > Math.abs(dx)) this.jump();
+      else if (Math.abs(dx) > 30) this.setLane(this.lane + Math.sign(dx));
+      else {
+        const px = this.lanes[this.lane];
+        if (p.x < px - 40) this.setLane(this.lane - 1);
+        else if (p.x > px + 40) this.setLane(this.lane + 1);
+        else this.jump();
+      }
+    });
+    const kb = this.input.keyboard;
+    kb.on('keydown-LEFT', () => this.setLane(this.lane - 1));
+    kb.on('keydown-A', () => this.setLane(this.lane - 1));
+    kb.on('keydown-RIGHT', () => this.setLane(this.lane + 1));
+    kb.on('keydown-D', () => this.setLane(this.lane + 1));
+    kb.on('keydown-UP', () => this.jump());
+    kb.on('keydown-W', () => this.jump());
+    kb.on('keydown-SPACE', e => { if (!e.repeat) this.jump(); });
+
+    this.drawWorld(); this.placeObs(); this.drawFire();
+  }
+  drawPerson(g, dx, color) {
+    g.fillStyle(color).fillEllipse(dx, 0, 34, 20);
+    g.fillStyle(0x3B2A20).fillCircle(dx, -1, 9);
+    g.fillStyle(0xDDE6EA).fillRect(dx - 4, -18, 8, 6);           // Handy vor der Nase
+  }
+  addObs(s, type, lanes) {
+    const g = this.add.graphics().setDepth(8);
+    const x = lanes.reduce((a, l) => a + this.lanes[l], 0) / lanes.length;
+    if (type === 'person') this.drawPerson(g, 0, Phaser.Utils.Array.GetRandom(STUDENT_COLORS));
+    else if (type === 'group') { this.drawPerson(g, -50, Phaser.Utils.Array.GetRandom(STUDENT_COLORS)); this.drawPerson(g, 50, Phaser.Utils.Array.GetRandom(STUDENT_COLORS)); }
+    else {                                                        // Rucksack am Boden: drüberspringen
+      g.fillStyle(0x000000, 0.25).fillEllipse(2, 4, 32, 14);
+      g.fillStyle(0x2C9C8F).fillRoundedRect(-14, -10, 28, 20, 5);
+      g.lineStyle(3, 0x1C6F65).lineBetween(-8, -10, -8, 10).lineBetween(8, -10, 8, 10);
+    }
+    const o = { s, type, lanes, x, g, low: type === 'bag', hit: false };
+    this.obs.push(o);
+    return o;
+  }
+  setLane(l) {
+    if (this.done) return;
+    if (l < 0 || l > 2) {                                         // Wand oder Geländer
+      Sfx.tone(120, 0.08, 'square', 0.05);
+      this.tweens.add({ targets: this.player, x: this.lanes[this.lane] + (l < 0 ? -12 : 12), duration: 50, yoyo: true });
+      return;
+    }
+    this.lane = l;
+    Sfx.tone(420, 0.04, 'triangle', 0.06);
+    this.tweens.add({ targets: this.player, x: this.lanes[l], duration: 90, ease: 'Quad.easeOut' });
+  }
+  jump() {
+    if (this.done || this.jumpT > 0) return;
+    this.jumpT = this.jumpDur;
+    Sfx.tone(480, 0.1, 'triangle', 0.07, 300);
+  }
+  hitObs(o) {
+    o.hit = true;
+    this.fireDist -= this.hitCost;
+    this.inv = 0.5;
+    Sfx.tone(180, 0.18, 'sawtooth', 0.07, -80);
+    this.cameras.main.shake(140, 0.008);
+    this.tweens.add({ targets: o.g, alpha: 0.3, duration: 200 });
+    const t = txt(this, this.player.x, this.PY - 30, o.low ? 'ÜBER DEN RUCKSACK!' : 'SORRY!', 16, '#FFC61A', { stroke: '#10231A', strokeThickness: 5 }).setDepth(20);
+    this.tweens.add({ targets: t, y: t.y - 40, alpha: 0, duration: 600, onComplete: () => t.destroy() });
+  }
+  edgeAt(s) {                                                    // Trichterkante läuft langsam zur Mitte
+    const f = Phaser.Math.Clamp(s / this.FLIGHT, 0, 1);
+    return this.EDGE0 + (this.EDGE1 - this.EDGE0) * f;
+  }
+  drawWorld() {
+    const g = this.bgG, { LW, RAIL, FLIGHT, D } = this;
+    g.clear();
+    const yD = this.Y(D);
+    if (yD > -20) {                                               // draußen: Sammelplatz
+      g.fillStyle(0x4E8A3C).fillRect(0, -10, W, yD + 10);
+      g.fillStyle(COL.exit).fillRect(LW - 14, yD - 8, this.EDGE1 - LW + 14, 16);
+    }
+    this.exitLbl.setPosition((LW + this.EDGE1) / 2, yD - 34);
+    const wallTop = Math.max(-10, yD);
+    g.fillStyle(0x3B454B).fillRect(LW - 14, wallTop, 14, H + 20 - wallTop);
+
+    // sichtbarer Ausschnitt der Treppe
+    const sLo = Math.max(0, this.sP - (H - this.PY) - 20), sHi = Math.min(FLIGHT, this.sP + this.PY + 20);
+    if (sHi > sLo) {
+      const y0 = this.Y(sLo), y1 = this.Y(sHi), e0 = this.edgeAt(sLo), e1 = this.edgeAt(sHi);
+      g.fillStyle(0x8A949A).fillPoints([{ x: LW, y: y0 }, { x: e0, y: y0 }, { x: e1, y: y1 }, { x: LW, y: y1 }], true);
+      for (let st = Math.ceil(sLo / 22) * 22; st < sHi; st += 22) {   // Stufen
+        const y = this.Y(st), e = this.edgeAt(st);
+        g.lineStyle(2, 0x6F7980).lineBetween(LW, y, e, y);
+        g.lineStyle(3, COL.hazard).lineBetween(LW, y, LW + 18, y);
+      }
+      g.fillStyle(COL.alarm, 0.18).fillPoints([{ x: RAIL, y: y0 }, { x: e0, y: y0 }, { x: e1, y: y1 }, { x: RAIL, y: y1 }], true);
+      g.lineStyle(5, 0x3B454B).lineBetween(e0, y0, e1, y1);           // Trichterkante
+      g.lineStyle(10, COL.ink).lineBetween(RAIL, y0, RAIL, y1);       // Geländer
+      g.lineStyle(5, 0xD9DEE1).lineBetween(RAIL, y0, RAIL, y1);
+      for (const es of [120, 700, 1350]) {                            // gestrandete Erstis im Trichter
+        const ey = this.Y(es);
+        if (ey < -20 || ey > H + 20) continue;
+        const ex = (RAIL + this.edgeAt(es)) / 2 + 10;
+        g.fillStyle(0x7A4FB5).fillEllipse(ex, ey, 30, 18);
+        g.fillStyle(0x3B2A20).fillCircle(ex, ey, 8);
+      }
+    }
+    for (const d of this.deadLbl) d.t.setPosition((RAIL + this.edgeAt(d.s)) / 2 + 10, this.Y(d.s));
+
+    // Podest oben (1. OG) und unten (EG)
+    const landings = [[-100, 0, this.EDGE0], [FLIGHT, D, this.EDGE1]];
+    landings.forEach(([a, b, e], i) => {
+      const ya = this.Y(a), yb = this.Y(b);
+      if (ya > -20 && yb < H + 20) g.fillStyle(0x9AA3A8).fillRect(LW, yb, e - LW, ya - yb);
+      this.labels[i].setPosition((LW + e) / 2, (ya + yb) / 2);
+    });
+  }
+  placeObs() {
+    for (const o of this.obs) {
+      const y = this.Y(o.s);
+      o.g.setPosition(o.x, y).setVisible(y > -40 && y < H + 40);
+    }
+  }
+  drawFire() {
+    const g = this.fireG, top = this.PY + this.fireDist, t = this.left / 1000;
+    g.clear();
+    g.fillStyle(0xB3261E).fillRect(0, top, W, H - top + 10);
+    for (let x = -10; x < W + 20; x += 34) {
+      const h = 30 + 14 * Math.sin(t * 14 + x * 0.31) + Math.random() * 6;
+      g.fillStyle(COL.alarm).fillTriangle(x, top + 2, x + 34, top + 2, x + 17, top - h);
+      g.fillStyle(0xFF8A1E).fillTriangle(x + 6, top + 4, x + 28, top + 4, x + 17, top - h * 0.55);
+      g.fillStyle(COL.hazard).fillTriangle(x + 11, top + 6, x + 23, top + 6, x + 17, top - h * 0.28);
+    }
+    this.heat.setFillStyle(COL.alarm, Phaser.Math.Clamp((100 - this.fireDist) / 100, 0, 1) * 0.28);
+  }
+  step(dt) {
+    this.sP += this.v * dt;
+    if (this.jumpT > 0) this.jumpT = Math.max(0, this.jumpT - dt);
+    if (this.inv > 0) this.inv -= dt;
+    this.fireDist -= this.fireCreep * this.spd * dt;
+
+    for (const o of this.obs) {                                    // Spurwechsler biegen ab
+      if (o.wander === undefined || o.moved || o.s - this.sP > 250) continue;
+      o.moved = true;
+      this.tweens.add({ targets: o, x: this.lanes[o.wander], duration: 320, ease: 'Sine.easeInOut' });
+      this.time.delayedCall(140, () => { o.lanes = [o.wander]; });
+    }
+
+    for (const o of this.obs) {
+      if (o.hit || Math.abs(o.s - this.sP) > 20 || !o.lanes.includes(this.lane)) continue;
+      if (o.low && this.jumpT > 0) continue;
+      if (this.inv > 0) continue;
+      this.hitObs(o);
+      break;
+    }
+
+    const j = this.jumpT > 0 ? Math.sin((1 - this.jumpT / this.jumpDur) * Math.PI) : 0;
+    this.player.setScale(1 + j * 0.45);
+    this.player.y = this.PY - j * 8;
+    this.player.alpha = this.inv > 0 && Math.floor(this.inv * 20) % 2 ? 0.4 : 1;
+    this.shadow.setPosition(this.player.x, this.PY + 4).setScale(1 - j * 0.35);
+
+    this.drawWorld();
+    this.placeObs();
+    this.drawFire();
+    if (this.fireDist <= 14) this.lose('Vom Feuer eingeholt. Zu oft gestolpert.');
+  }
+}
+
+// ============================================================
+//  5) SPEICHERN! – Button-Mashing
+// ============================================================
+class Speichern extends MicroGame {
+  constructor() {
+    super('Speichern', { title: 'SPEICHERN!', hint: 'Hämmern! Tippen oder Leertaste', duration: 3600, bg: 0x4A2C2A, timeoutMsg: 'Akku leer. 14 Seiten weg.' });
+  }
+  setup() {
+    this.prog = 0;
+    this.inc = 0.075 * Math.sqrt(this.spd);
+    const c = this.lapC = this.add.container(400, 392);
+    const g = this.add.graphics();
+    g.fillStyle(0x2B2B2B).fillRoundedRect(-190, -310, 380, 262, 12);
+    g.fillStyle(0xEDEFF2).fillRect(-176, -296, 352, 232);
+    g.fillStyle(COL.chair).fillRect(-176, -296, 352, 24);
+    g.fillStyle(0xC5CAD0);
+    for (let i = 0; i < 7; i++) g.fillRect(-150, -256 + i * 16, 300 - (i % 3) * 60, 6);
+    g.fillRect(-150, -114, 300, 18);
+    g.fillStyle(0x3A3A3A).fillPoints([{ x: -210, y: -48 }, { x: 210, y: -48 }, { x: 232, y: -18 }, { x: -232, y: -18 }], true);
+    const title = this.add.text(-166, -292, 'Hausarbeit_FINAL_v7.docx', { fontFamily: BODY, fontSize: '13px', fontStyle: '600', color: '#F5F7F2' });
+    this.bar2 = this.add.rectangle(-150, -114, 300, 18, COL.exit).setOrigin(0, 0);
+    this.bar2.scaleX = 0;
+    this.lbl = this.add.text(0, -122, 'Nicht gespeichert', { fontFamily: BODY, fontSize: '15px', fontStyle: '800', color: '#10231A' }).setOrigin(0.5, 1);
+    this.black = this.add.rectangle(-176, -296, 352, 232, 0x000000).setOrigin(0, 0).setVisible(false);
+    c.add([g, title, this.bar2, this.lbl, this.black]);
+
+    this.batG = this.add.graphics();
+    this.pct = this.add.text(684, 41, '', { fontFamily: FONT, fontSize: '18px', color: '#F5F7F2' }).setOrigin(1, 0.5);
+
+    this.onAction(() => this.press());
+    this.input.keyboard.on('keydown', e => { if (!e.repeat && e.code !== 'Space') this.press(); });
+    this.step(0);
+  }
+  press() {
+    if (this.done) return;
+    this.prog = Math.min(1, this.prog + this.inc);
+    Sfx.tone(260 + this.prog * 700, 0.04, 'square', 0.04);
+    this.lapC.setScale(1, 0.97);
+    this.tweens.add({ targets: this.lapC, scaleY: 1, duration: 70 });
+    this.bar2.scaleX = this.prog;
+    this.lbl.setText('Speichern … ' + Math.round(this.prog * 100) + ' %');
+    if (this.prog >= 1) {
+      this.lbl.setText('Gespeichert ✓');
+      this.win('Gespeichert. Eine Sekunde später: Akku tot.');
+    }
+  }
+  step(dt) {
+    const frac = Math.max(0, this.left / this.total);
+    const blink = frac < 0.35 && Math.floor(this.left / 150) % 2 === 0;
+    this.batG.clear();
+    drawBattery(this.batG, 696, 30, Math.max(0.06, frac * 0.25), COL.alarm, blink ? COL.alarm : COL.paper);
+    this.pct.setText((3 * frac).toFixed(1).replace('.', ',') + ' %');
+  }
+  onLose() {
+    this.black.setVisible(true);
+    this.pct.setText('0,0 %');
+    this.lapC.add(this.add.text(0, -180, 'Akku leer', { fontFamily: FONT, fontSize: '28px', color: '#E2382B' }).setOrigin(0.5));
+  }
+}
+
+// ============================================================
+//  6) KLO FINDEN! – Stockwerk-Hopping gegen gesperrte Toiletten
+// ============================================================
+class KloFinden extends MicroGame {
+  constructor() {
+    super('KloFinden', { title: 'KLO FINDEN!', hint: '↑ ↓ oder Stockwerk antippen', duration: 6500, bg: 0xCBD3C7, timeoutMsg: 'Zu spät. Wir reden nicht drüber.' });
+  }
+  floorY(f) { return this.TOP + (5 - f) * this.BAND; }   // y der Bodenkante, auch für Zwischenwerte
+  setup() {
+    this.FL = ['EG', '1. OG', '2. OG', '3. OG', '4. OG'];
+    this.BAND = 76; this.TOP = 8; this.stairX = 150;
+    this.LABELS = ['GESPERRT', 'Außer Betrieb', 'Reinigung', 'Wasserschaden', 'Nur Personal', 'Defekt seit 2019', 'Bitte EG nutzen'];
+    this.openDur = 2.2 / this.spd;
+    this.gap = 1.25 / this.spd;
+    this.spawnT = this.gap;
+
+    const g = this.add.graphics();
+    for (let i = 0; i < 5; i++) {
+      const yb = this.floorY(i), yt = yb - this.BAND;
+      g.fillStyle(i % 2 ? 0xD7DDD3 : 0xC6CFC2).fillRect(0, yt, W, this.BAND);
+      g.fillStyle(0x5B6B60).fillRect(0, yb - 5, W, 5);
+      body(this, 42, yb - 36, this.FL[i], 15, '#10231A', { fontStyle: '800' });
+      if (i < 4) {   // Treppe hoch ins nächste Stockwerk
+        g.fillStyle(0x8E989E);
+        for (let s = 0; s < 6; s++) g.fillRect(112 + s * 13, yb - 5 - (s + 1) * 12, 13, (s + 1) * 12);
+      }
+    }
+    this.hl = this.add.rectangle(0, 0, W, this.BAND - 5, COL.hazard, 0.22).setOrigin(0, 0);
+
+    this.doors = [];
+    for (let i = 0; i < 5; i++) {
+      const d = { x: Phaser.Math.Between(430, 730), state: 'closed', t: 0, label: Phaser.Utils.Array.GetRandom(this.LABELS) };
+      d.sign = this.add.text(d.x, this.floorY(i) - 66, '', { fontFamily: BODY, fontSize: '11px', fontStyle: '800', color: '#F5F7F2', padding: { x: 5, y: 2 } }).setOrigin(0.5, 1).setDepth(6);
+      this.doors.push(d);
+    }
+    // Start: man steht im 2. OG, das nächste Klo öffnet ganz unten
+    this.doors[0].state = 'soon'; this.doors[0].t = 0.9 / this.spd;
+    this.doorG = this.add.graphics().setDepth(5);
+    this.refreshSigns();
+
+    const pg = this.add.graphics();
+    pg.fillStyle(0x2E5E8C).fillRect(-16, -36, 8, 20);
+    pg.fillStyle(COL.hazard).fillRoundedRect(-10, -40, 20, 32, 6);
+    pg.fillStyle(COL.skin).fillCircle(0, -48, 9);
+    pg.fillStyle(COL.ink).fillRect(-9, -8, 7, 8).fillRect(2, -8, 7, 8);
+    this.player = this.add.container(0, 0, [pg]).setDepth(10);
+    this.bubble = txt(this, 0, 0, 'ZU!', 16, '#E2382B', { stroke: '#F5F7F2', strokeThickness: 5 }).setDepth(12).setVisible(false);
+
+    this.pl = { fy: 2, x: this.stairX + 60 };
+    this.target = 2;
+    this.knocked = false;
+    this.hl.y = this.floorY(2) - this.BAND;
+
+    this.input.on('pointerdown', p => {
+      const k = Math.floor((p.y - this.TOP) / this.BAND);
+      this.setTarget(4 - Phaser.Math.Clamp(k, 0, 4));
+    });
+    this.input.keyboard.on('keydown-UP', () => this.setTarget(this.target + 1));
+    this.input.keyboard.on('keydown-DOWN', () => this.setTarget(this.target - 1));
+    this.placePlayer(0);
+    this.drawDoors();
+  }
+  setTarget(i) {
+    i = Phaser.Math.Clamp(i, 0, 4);
+    if (i === this.target || this.done) return;
+    this.target = i;
+    this.knocked = false;
+    this.bubble.setVisible(false);
+    this.hl.y = this.floorY(i) - this.BAND;
+    Sfx.blip();
+  }
+  refreshSigns() {
+    for (const d of this.doors) {
+      if (d.state === 'open') d.sign.setText('WC').setBackgroundColor('#1E8A4C');
+      else if (d.state === 'soon') d.sign.setText('gleich frei').setBackgroundColor('#B8860B');
+      else d.sign.setText(d.label).setBackgroundColor('#E2382B');
+    }
+  }
+  drawDoors() {
+    const g = this.doorG;
+    g.clear();
+    this.doors.forEach((d, i) => {
+      const yb = this.floorY(i) - 5, x = d.x;
+      const closing = d.state === 'open' && d.t < 0.55 / this.spd;
+      g.fillStyle(d.state === 'open' ? COL.chair : 0x7D8A80).fillRect(x - 22, yb - 54, 44, 54);
+      g.lineStyle(3, COL.ink).strokeRect(x - 22, yb - 54, 44, 54);
+      g.fillStyle(COL.ink).fillCircle(x + 14, yb - 26, 3);
+      if (d.state === 'closed') {   // Absperrband
+        g.fillStyle(COL.alarm);
+        g.fillPoints([{ x: x - 26, y: yb - 46 }, { x: x - 20, y: yb - 52 }, { x: x + 26, y: yb - 10 }, { x: x + 20, y: yb - 4 }], true);
+        g.fillPoints([{ x: x + 26, y: yb - 46 }, { x: x + 20, y: yb - 52 }, { x: x - 26, y: yb - 10 }, { x: x - 20, y: yb - 4 }], true);
+      }
+      const lamp = d.state === 'open' ? (closing && Math.floor(this.left / 90) % 2 ? COL.alarm : COL.good)
+        : d.state === 'soon' ? COL.hazard : 0x4A5A50;
+      g.fillStyle(lamp).fillCircle(x + 30, yb - 50, 5);
+      d.sign.setAlpha(closing && Math.floor(this.left / 90) % 2 ? 0.35 : 1);
+    });
+  }
+  placePlayer(dt) {
+    const urgency = 1 - this.left / this.total;
+    const jitter = Math.sin(this.left / 22) * (1 + urgency * 3);   // Druck steigt
+    const y = this.floorY(this.pl.fy) - 5;
+    this.player.setPosition(this.pl.x + jitter, y);
+    this.bubble.setPosition(this.pl.x, y - 72);
+  }
+  step(dt) {
+    // Türen schalten
+    let changed = false;
+    for (const d of this.doors) {
+      if (d.state === 'closed') continue;
+      d.t -= dt;
+      if (d.t > 0) continue;
+      if (d.state === 'soon') { d.state = 'open'; d.t = this.openDur; }
+      else { d.state = 'closed'; d.label = Phaser.Utils.Array.GetRandom(this.LABELS); }
+      changed = true;
+    }
+    this.spawnT -= dt;
+    if (this.spawnT <= 0) {
+      this.spawnT = this.gap;
+      let cand = this.doors.map((d, i) => i).filter(i => this.doors[i].state === 'closed' && i !== this.target);
+      if (!cand.length) cand = this.doors.map((d, i) => i).filter(i => this.doors[i].state === 'closed');
+      if (cand.length) {
+        const d = this.doors[Phaser.Utils.Array.GetRandom(cand)];
+        d.state = 'soon'; d.t = 0.55 / this.spd;
+        changed = true;
+      }
+    }
+    if (changed) this.refreshSigns();
+
+    // Spieler: erst zur Treppe, dann Stockwerk wechseln, dann zur Tür
+    const p = this.pl, walk = 520 * this.spd * dt;
+    const toward = (tx) => { const dx = tx - p.x; p.x += Math.sign(dx) * Math.min(Math.abs(dx), walk); return Math.abs(tx - p.x) < 1; };
+    if (Math.abs(p.fy - this.target) > 0.001) {
+      if (toward(this.stairX)) {
+        const df = this.target - p.fy, m = dt / (0.22 / this.spd);
+        p.fy += Math.sign(df) * Math.min(Math.abs(df), m);
+      }
+    } else {
+      p.fy = this.target;
+      const d = this.doors[this.target];
+      if (toward(d.x)) {
+        if (d.state === 'open') {
+          this.bubble.setText('PUH!').setColor('#1E8A4C').setVisible(true);
+          const f = this.FL[this.target];
+          this.win(this.target === 0 ? 'Im EG. Hätte man auch gleich haben können.' : 'Gefunden im ' + f + '. Rettung in letzter Sekunde.');
+        } else if (!this.knocked) {
+          this.knocked = true;
+          Sfx.tone(140, 0.14, 'square', 0.06);
+          this.bubble.setText(d.state === 'soon' ? 'GLEICH …' : 'ZU!').setColor(d.state === 'soon' ? '#B8860B' : '#E2382B').setVisible(true);
+        } else if (d.state === 'soon') {
+          this.bubble.setText('GLEICH …').setColor('#B8860B');
+        }
+      }
+    }
+    this.placePlayer(dt);
+    this.drawDoors();
+  }
+}
+
+// ============================================================
+//  Titel, Zwischenbildschirm, Game Over
+// ============================================================
+class Title extends Phaser.Scene {
+  constructor() { super('Title'); }
+  create() {
+    this.cameras.main.setBackgroundColor(COL.ink);
+    hazard(this, H - 22, 22);
+
+    const sx = W / 2 - 300, sy = 46, sw = 600, sh = 130;
+    const g = this.add.graphics();
+    g.fillStyle(COL.exit).fillRoundedRect(sx, sy, sw, sh, 10);
+    g.lineStyle(4, COL.paper).strokeRoundedRect(sx + 8, sy + 8, sw - 16, sh - 16, 6);
+    // Piktogramm: Tür + Läufer
+    g.fillStyle(COL.paper).fillRect(sx + 30, sy + 26, 50, 80);
+    g.fillStyle(COL.exit).fillRect(sx + 37, sy + 33, 36, 73);
+    g.fillStyle(COL.paper).fillCircle(sx + 110, sy + 36, 10);
+    g.lineStyle(9, COL.paper);
+    g.lineBetween(sx + 106, sy + 50, sx + 98, sy + 78);
+    g.lineBetween(sx + 104, sy + 56, sx + 120, sy + 68);
+    g.lineBetween(sx + 104, sy + 56, sx + 88, sy + 62);
+    g.lineBetween(sx + 98, sy + 78, sx + 114, sy + 100);
+    g.lineBetween(sx + 98, sy + 78, sx + 84, sy + 92);
+    g.lineBetween(sx + 84, sy + 92, sx + 76, sy + 104);
+
+    txt(this, sx + 360, sy + 54, 'DHBW SURVIVAL', 40, '#F5F7F2');
+    body(this, sx + 360, sy + 94, 'Eine Vorlesung in 5-Sekunden-Spielen', 18, '#F5F7F2', { fontStyle: '600' });
+
+    body(this, W / 2, 210, 'Fenster zu · WLAN fangen · Platz finden · Fluchttreppe · Speichern · Klo finden', 15, '#9DB5A6');
+
+    const btn = this.add.container(W / 2, 286);
+    const bg = this.add.rectangle(0, 0, 280, 66, COL.hazard).setStrokeStyle(5, COL.paper);
+    btn.add([bg, txt(this, 0, 2, "LOS GEHT'S", 28, '#10231A')]);
+    this.tweens.add({ targets: btn, scale: 1.05, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+    body(this, W / 2, 352, State.best ? 'Rekord: ' + State.best + ' Runden' : '4 Leben. Jede Runde ein neues Problem.', 16, '#F5F7F2');
+    body(this, W / 2, 384, 'Maus / Touch  ·  Leertaste  ·  Pfeiltasten', 14, '#9DB5A6');
+
+    let started = false;
+    const go = () => {
+      if (started) return; started = true;
+      Sfx.init(); Sfx.blip();
+      resetRun();
+      this.scene.start('Transition');
+    };
+    this.input.once('pointerdown', go);
+    this.input.keyboard.once('keydown-SPACE', go);
+    this.input.keyboard.once('keydown-ENTER', go);
+  }
+}
+
+class Transition extends Phaser.Scene {
+  constructor() { super('Transition'); }
+  create() {
+    this.cameras.main.setBackgroundColor(COL.ink);
+    const r = State.result;
+    State.result = null;
+    if (r) { State.round++; if (r.ok) State.score++; else State.lives--; }
+    const dead = State.lives <= 0;
+    const spedUp = !!r && !dead && State.round % 5 === 0;
+    if (spedUp) State.speed = Math.round((State.speed + 0.15) * 100) / 100;
+
+    hazard(this, 0, 22);
+    hazard(this, H - 22, 22);
+
+    txt(this, W / 2, 92, String(State.score), 86, '#F5F7F2');
+    body(this, W / 2, 146, 'Runden überlebt', 15, '#9DB5A6', { fontStyle: '600' });
+
+    if (r) {
+      txt(this, W / 2, 196, r.ok ? 'GESCHAFFT!' : 'DANEBEN!', 34, r.ok ? '#3FD07A' : '#E2382B');
+      body(this, W / 2, 232, r.msg, 17, '#F5F7F2');
+    } else {
+      txt(this, W / 2, 196, 'VORLESUNG BEGINNT', 30, '#FFC61A');
+      body(this, W / 2, 232, 'Überlebe so viele Runden wie möglich.', 17, '#F5F7F2');
+    }
+
+    // Leben als Akkus
+    const x0 = W / 2 - 4 * 64 / 2 + 8;
+    for (let i = 0; i < 4; i++) {
+      const g = this.add.graphics();
+      const alive = i < State.lives;
+      drawBattery(g, x0 + i * 64, 275, alive ? 1 : 0, COL.good, alive ? COL.paper : 0x4A5A50);
+      if (r && !r.ok && i === State.lives) {
+        g.clear(); drawBattery(g, x0 + i * 64, 275, 0, COL.good, COL.alarm);
+        this.tweens.add({ targets: g, alpha: 0.2, duration: 120, yoyo: true, repeat: 4 });
+      }
+    }
+
+    if (dead) { this.time.delayedCall(1100, () => this.scene.start('GameOver')); return; }
+
+    if (spedUp) {
+      const t = txt(this, W / 2, 352, 'TEMPO HOCH!', 36, '#FFC61A', { stroke: '#E2382B', strokeThickness: 6 });
+      body(this, W / 2, 390, 'Der Prof redet jetzt schneller.', 15, '#9DB5A6');
+      this.tweens.add({ targets: t, scale: 1.15, duration: 160, yoyo: true, repeat: 3 });
+      Sfx.faster();
+    }
+    const next = nextGameKey();
+    this.time.delayedCall(spedUp ? 2000 : (r ? 1350 : 1600), () => this.scene.start(next));
+  }
+}
+
+class GameOver extends Phaser.Scene {
+  constructor() { super('GameOver'); }
+  create() {
+    this.cameras.main.setBackgroundColor(COL.ink);
+    const newBest = State.score > State.best;
+    if (newBest) { State.best = State.score; try { localStorage.setItem('dhbw-survival-best', String(State.best)); } catch (e) {} }
+    Sfx.over();
+
+    this.add.rectangle(0, 80, W, 110, COL.alarm).setOrigin(0, 0);
+    txt(this, W / 2, 135, 'EXMATRIKULIERT', 52, '#F5F7F2');
+    txt(this, W / 2, 238, State.score + (State.score === 1 ? ' Runde' : ' Runden') + ' überlebt', 28, '#F5F7F2');
+    if (newBest) {
+      const t = txt(this, W / 2, 284, 'NEUER REKORD!', 24, '#FFC61A');
+      this.tweens.add({ targets: t, scale: 1.12, duration: 400, yoyo: true, repeat: -1 });
+    } else {
+      body(this, W / 2, 284, 'Rekord: ' + State.best, 17, '#9DB5A6');
+    }
+    body(this, W / 2, 352, 'Nochmal: Klick oder Leertaste', 17, '#F5F7F2', { fontStyle: '600' });
+    hazard(this, H - 22, 22);
+
+    this.time.delayedCall(700, () => {
+      const go = () => this.scene.start('Title');
+      this.input.once('pointerdown', go);
+      this.input.keyboard.once('keydown-SPACE', go);
+    });
+  }
+}
+
+// ============================================================
+//  Start (wartet kurz auf die Schriften)
+// ============================================================
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: W,
+  height: H,
+  backgroundColor: '#10231A',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [Title, Transition, GameOver, FensterZu, WlanFangen, Sitzplatz, Fluchttreppe, Speichern, KloFinden]
+};
+
+function boot() { if (!window.__dhbwGame) window.__dhbwGame = new Phaser.Game(config); }
+const fontsReady = (document.fonts && document.fonts.load)
+  ? Promise.all([document.fonts.load('40px "Bungee"'), document.fonts.load('16px "Archivo"'), document.fonts.load('600 16px "Archivo"'), document.fonts.load('800 16px "Archivo"')])
+  : Promise.resolve();
+Promise.race([fontsReady, new Promise(res => setTimeout(res, 1500))]).then(boot, boot);
+</script>
