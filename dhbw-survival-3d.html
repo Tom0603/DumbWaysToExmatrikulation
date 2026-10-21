@@ -1,0 +1,2372 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dumb Ways to Exmatrikulation 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap">
+<style>
+  /* Same arcade cabinet look as the 2D version: neon on black, pixel font, scanlines */
+  :root {
+    --bg: #07071A;
+    --pink: #FF2E88;
+    --cyan: #00E5FF;
+    --yellow: #FFE600;
+    --paper: #FFFFFF;
+    --muted: #8A8AB8;
+    --display: "Press Start 2P", "Courier New", monospace;
+    --body: "VT323", "Courier New", monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--paper);
+    font-family: var(--body);
+    font-size: 19px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-block: 12px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  header { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+  .tag {
+    font-family: var(--display);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--yellow);
+    text-shadow: 0 0 8px var(--pink), 2px 2px 0 var(--pink);
+  }
+  header p { margin: 0; color: var(--muted); }
+  #game {
+    flex: 1 1 auto; min-height: 220px; position: relative; overflow: hidden;
+    border: 3px solid var(--pink);
+    border-radius: 6px;
+    box-shadow: 0 0 18px rgba(255, 46, 136, .55), inset 0 0 18px rgba(255, 46, 136, .35);
+    background: #000;
+  }
+  /* CRT tube: scanlines + vignette, click-through */
+  #game::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 2;
+    background:
+      repeating-linear-gradient(to bottom, rgba(0, 0, 0, .28) 0 1px, transparent 1px 3px),
+      radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, .55) 100%);
+  }
+  #stage { position: absolute; overflow: hidden; }
+  #shaker { position: absolute; inset: 0; }
+  #shaker canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #hud {
+    position: absolute; left: 0; top: 0; width: 800px; height: 450px;
+    transform-origin: 0 0; pointer-events: none; overflow: hidden;
+  }
+  #flash { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
+  .layer { position: absolute; inset: 0; }
+  .box { position: absolute; }
+  .t { position: absolute; left: 0; top: 0; white-space: pre; text-align: center; line-height: 1.25; transform-origin: 0 0; }
+  .t.display { font-family: var(--display); }
+  .t.body { font-family: var(--body); line-height: 1; }
+  .t.stroked { paint-order: stroke fill; }
+  .neon-frame { position: absolute; inset: 8px; border: 3px solid; }
+  .fatal { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; font-size: 24px; color: var(--pink); }
+  footer { color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  footer a { color: var(--cyan); }
+  kbd {
+    font-family: var(--display);
+    font-size: 10px;
+    color: var(--cyan);
+    border: 2px solid var(--cyan);
+    padding: 1px 5px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="tag">Dumb Ways to Exmatrikulation 3D</span>
+  <p>1 PLAYER · 6 MINIGAMES · ALLE 5 RUNDEN SCHNELLER</p>
+</header>
+<div id="game"></div>
+<footer>
+  <span>Steuerung nur per Tastatur: <kbd>Leertaste</kbd>, <kbd>Pfeiltasten</kbd> · Musik an/aus: <kbd>M</kbd></span>
+  <span>Lieber flach? <a href="dhbw-survival.html">2D-Version</a></span>
+</footer>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+// ============================================================
+//  DUMB WAYS TO EXMATRIKULATION 3D – three.js port of the 2D game.
+//  Game rules, timings and balancing mirror dhbw-survival.html;
+//  only the presentation is 3D. Text and UI live in a DOM overlay
+//  laid out in the same 800×450 coordinate space as the 2D version.
+// ============================================================
+import * as THREE from 'three';
+
+const W = 800, H = 450;
+const COL = {
+  ink: 0x10231A, exit: 0x1E8A4C, paper: 0xF5F7F2, hazard: 0xFFC61A,
+  alarm: 0xE2382B, good: 0x3FD07A, slate: 0x24323A, wall: 0xD7DDD3,
+  floor: 0xC2B08F, chair: 0x2E5E8C, skin: 0xE8B88E
+};
+const STUDENT_COLORS = [0xE2382B, 0x7A4FB5, 0x2C9C8F, 0xD9822B, 0x4466CC];
+const INK = 0x07071A, INK_S = '#07071A';
+const PAPER_S = '#F5F7F2', INK_TEXT = '#10231A';
+const NEON = { pink: '#FF2E88', cyan: '#00E5FF', yellow: '#FFE600', green: '#39FF14', purple: '#B24DFF', orange: '#FF8A00' };
+const NEON_HEX = [0xFF2E88, 0x00E5FF, 0xFFE600, 0x39FF14, 0xB24DFF, 0xFF8A00];
+const GAME_KEYS = ['FensterZu', 'WlanFangen', 'Sitzplatz', 'Fluchttreppe', 'Speichern', 'KloFinden'];
+const BEST_SCORE_KEY = 'dhbw-survival-3d-best';
+const MAX_FRAME_MS = 50;
+const LIVES = 4;
+
+// World scale: floor games map one 2D pixel to WORLD_UNIT. "Flat" screens put the
+// camera FLAT_DISTANCE in front of the z = 0 plane so one 2D pixel equals FLAT_UNIT there.
+const CAMERA_FOV = 50;
+const WORLD_UNIT = 1 / 40;
+const FLAT_DISTANCE = 10;
+const FLAT_UNIT = 2 * FLAT_DISTANCE * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2)) / H;
+const FLAT_SCALE = FLAT_UNIT / WORLD_UNIT;
+const flatX = x => (x - W / 2) * FLAT_UNIT;
+const flatY = y => (H / 2 - y) * FLAT_UNIT;
+const flatPx = length => length * FLAT_UNIT;
+const floorX = x => (x - W / 2) * WORLD_UNIT;
+const floorZ = y => (y - H / 2) * WORLD_UNIT;
+
+// ---------- Utilities ----------
+const rand = (min, max) => min + Math.random() * (max - min);
+const randInt = (min, max) => Math.floor(rand(min, max + 1));
+const pick = list => list[Math.floor(Math.random() * list.length)];
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const distance = (ax, ay, bx, by) => Math.hypot(bx - ax, by - ay);
+const css = hex => '#' + hex.toString(16).padStart(6, '0');
+const pad = (n, length = 6) => String(n).padStart(length, '0');
+function shuffle(list) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
+}
+
+const Ease = {
+  linear: k => k,
+  quadIn: k => k * k,
+  quadOut: k => k * (2 - k),
+  sineOut: k => Math.sin(k * Math.PI / 2),
+  sineInOut: k => -(Math.cos(Math.PI * k) - 1) / 2,
+  backOut: k => { const s = 1.70158, t = k - 1; return t * t * ((s + 1) * t + s) + 1; },
+  bounceOut: k => {
+    if (k < 1 / 2.75) return 7.5625 * k * k;
+    if (k < 2 / 2.75) { k -= 1.5 / 2.75; return 7.5625 * k * k + 0.75; }
+    if (k < 2.5 / 2.75) { k -= 2.25 / 2.75; return 7.5625 * k * k + 0.9375; }
+    k -= 2.625 / 2.75; return 7.5625 * k * k + 0.984375;
+  }
+};
+
+// ---------- Game state ----------
+const State = { lives: LIVES, score: 0, round: 0, speed: 1, result: null, bag: [], last: null, best: 0 };
+try { State.best = parseInt(localStorage.getItem(BEST_SCORE_KEY), 10) || 0; } catch (error) { State.best = 0; }
+
+function resetRun() {
+  Object.assign(State, { lives: LIVES, score: 0, round: 0, speed: 1, result: null, bag: [], last: null });
+}
+function nextGameKey() {
+  if (!State.bag.length) {
+    State.bag = shuffle(GAME_KEYS.slice());
+    if (State.bag[0] === State.last) State.bag.push(State.bag.shift());
+  }
+  State.last = State.bag.shift();
+  return State.last;
+}
+function saveBest() {
+  try { localStorage.setItem(BEST_SCORE_KEY, String(State.best)); } catch (error) { /* private mode: hi-score stays session-only */ }
+}
+
+// ---------- Sound (WebAudio, no assets) ----------
+const Sfx = {
+  ctx: null,
+  init() {
+    try {
+      if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+    } catch (error) { this.ctx = null; }
+  },
+  tone(freq, dur = 0.1, type = 'square', vol = 0.06, slide = 0) {
+    const c = this.ctx; if (!c) return;
+    const o = c.createOscillator(), g = c.createGain(), t = c.currentTime;
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + dur + 0.02);
+  },
+  seq(notes, gap = 80, dur = 0.11) { notes.forEach((f, i) => setTimeout(() => this.tone(f, dur), i * gap)); },
+  win() { this.seq([523, 659, 784, 1046]); },
+  lose() { this.tone(320, 0.45, 'sawtooth', 0.07, -240); },
+  tick() { this.tone(980, 0.04, 'square', 0.035); },
+  blip() { this.tone(660, 0.05, 'square', 0.04); },
+  coin() { this.tone(988, 0.08, 'square', 0.06); setTimeout(() => this.tone(1319, 0.35, 'square', 0.06), 80); },
+  faster() { this.seq([392, 523, 659, 784, 1046, 1318], 60, 0.08); },
+  over() { this.seq([392, 330, 262, 196], 180, 0.25); },
+  // Fire: noise with random crackle + rising hiss
+  burn(dur = 1.6) {
+    const c = this.ctx; if (!c) return;
+    const t = c.currentTime, len = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+    let pop = 0;
+    for (let i = 0; i < len; i++) {
+      if (Math.random() < 0.0009) pop = 0.6 + Math.random() * 0.4;
+      pop *= 0.985;
+      d[i] = (Math.random() * 2 - 1) * (0.25 + pop);
+    }
+    const src = c.createBufferSource(); src.buffer = buf;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(2500, t); lp.frequency.exponentialRampToValueAtTime(600, t + dur);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(lp); lp.connect(g); g.connect(c.destination);
+    src.start(t); src.stop(t + dur);
+    this.tone(220, 0.5, 'sawtooth', 0.05, 500);
+  },
+  // Fart: wobbling fundamental + filtered noise, fluttering volume
+  fart(dur = 1.1) {
+    const c = this.ctx; if (!c) return;
+    const t = c.currentTime, N = 64;
+    const pitch = new Float32Array(N), amp = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const k = i / (N - 1);
+      pitch[i] = (95 - 40 * k) * (0.8 + Math.random() * 0.4);
+      const env = Math.min(1, k * 12) * (1 - Math.pow(k, 3));
+      amp[i] = env * (i % 2 ? 0.35 + Math.random() * 0.3 : 1) * 0.22;
+    }
+    amp[N - 1] = 0;
+
+    const o = c.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueCurveAtTime(pitch, t, dur);
+
+    const len = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const noise = c.createBufferSource(); noise.buffer = buf;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 180; bp.Q.value = 0.8;
+    const ng = c.createGain(); ng.gain.value = 0.6;
+
+    const shaper = c.createWaveShaper(), curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) { const x = i / 128 - 1; curve[i] = Math.tanh(x * 4); }
+    shaper.curve = curve;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(900, t); lp.frequency.exponentialRampToValueAtTime(250, t + dur);
+    const g = c.createGain(); g.gain.setValueCurveAtTime(amp, t, dur);
+
+    o.connect(shaper); noise.connect(bp); bp.connect(ng); ng.connect(shaper);
+    shaper.connect(lp); lp.connect(g); g.connect(c.destination);
+    o.start(t); noise.start(t); o.stop(t + dur + 0.05); noise.stop(t + dur + 0.05);
+  }
+};
+
+// ---------- Music: upbeat chiptune loop, tempo follows State.speed ----------
+const Music = {
+  on: false, muted: false, bpm: 128, step: 0, next: 0, timer: null, out: null, noise: null,
+  // 4 bars of 16 sixteenths, MIDI notes, 0 = rest
+  MEL: [
+    76, 0, 79, 0, 84, 0, 79, 0, 81, 79, 76, 0, 74, 0, 76, 0,
+    72, 0, 76, 0, 81, 0, 76, 0, 79, 0, 76, 0, 74, 72, 0, 0,
+    77, 0, 81, 0, 84, 0, 81, 0, 79, 0, 77, 0, 76, 0, 74, 0,
+    79, 0, 0, 79, 81, 0, 79, 0, 77, 0, 76, 0, 74, 0, 71, 0
+  ],
+  CH: [[48, 52, 55], [45, 48, 52], [41, 45, 48], [43, 47, 50]],   // C – Am – F – G
+  mtof(n) { return 440 * Math.pow(2, (n - 69) / 12); },
+  start(speed = 1) {
+    const c = Sfx.ctx; if (!c) return;
+    if (!this.out) {
+      this.out = c.createGain(); this.out.connect(c.destination);
+      const len = c.sampleRate * 0.2, buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      this.noise = buf;
+    }
+    this.out.gain.value = this.muted ? 0 : 0.5;
+    this.setSpeed(speed);
+    if (this.on) return;
+    this.on = true; this.step = 0; this.next = c.currentTime + 0.05;
+    this.timer = setInterval(() => this.pump(), 25);
+  },
+  stop() { this.on = false; clearInterval(this.timer); },
+  setSpeed(s) { this.bpm = 128 * s; },
+  toggleMute() { this.muted = !this.muted; if (this.out) this.out.gain.value = this.muted ? 0 : 0.5; },
+  pump() {
+    const c = Sfx.ctx;
+    if (this.next < c.currentTime - 0.2) this.next = c.currentTime;   // tab was in the background
+    while (this.next < c.currentTime + 0.12) {
+      this.play(this.step % 64, this.next);
+      this.next += 60 / this.bpm / 4;
+      this.step++;
+    }
+  },
+  play(i, t) {
+    const s = i & 15, ch = this.CH[i >> 4], beat = 60 / this.bpm;
+    if (this.MEL[i]) this.voice(t, this.mtof(this.MEL[i]), beat * 0.45, 'square', 0.07);
+    if (s % 4 === 0) this.voice(t, this.mtof(ch[0] - 12 + (s % 8 ? 12 : 0)), beat * 0.4, 'triangle', 0.22);   // bass
+    if (s % 2 === 1) this.voice(t, this.mtof(ch[(i >> 1) % 3] + 24), beat * 0.12, 'square', 0.025);       // arpeggio
+    if (s % 8 === 0) this.kick(t);
+    if (s % 8 === 4) this.hit(t, 0.12, 1500, 0.22);   // snare
+    if (s % 2 === 1) this.hit(t, 0.03, 7000, 0.06);   // hi-hat
+  },
+  voice(t, f, d, type, v) {
+    const c = Sfx.ctx, o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g); g.connect(this.out);
+    o.start(t); o.stop(t + d + 0.02);
+  },
+  kick(t) {
+    const c = Sfx.ctx, o = c.createOscillator(), g = c.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+    o.connect(g); g.connect(this.out);
+    o.start(t); o.stop(t + 0.17);
+  },
+  hit(t, d, hp, v) {
+    const c = Sfx.ctx, n = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    n.buffer = this.noise; f.type = 'highpass'; f.frequency.value = hp;
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    n.connect(f); f.connect(g); g.connect(this.out);
+    n.start(t); n.stop(t + d + 0.01);
+  }
+};
+
+// ---------- Keyboard ----------
+const CAPTURED_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+const ANY_KEY = '*';
+const pressedKeys = new Set();
+const isDown = code => pressedKeys.has(code);
+
+window.addEventListener('keydown', event => {
+  if (CAPTURED_KEYS.has(event.code)) event.preventDefault();
+  pressedKeys.add(event.code);
+  if (event.code === 'KeyM' && !event.repeat) Music.toggleMute();
+  if (Game.screen) Game.screen.handleKey(event);
+});
+window.addEventListener('keyup', event => pressedKeys.delete(event.code));
+window.addEventListener('blur', () => pressedKeys.clear());
+
+// ---------- Stage: WebGL canvas + 800×450 HUD overlay, letterboxed into #game ----------
+const gameElement = document.getElementById('game');
+const stage = document.createElement('div'); stage.id = 'stage';
+const shaker = document.createElement('div'); shaker.id = 'shaker';
+const hudRoot = document.createElement('div'); hudRoot.id = 'hud';
+const flashElement = document.createElement('div'); flashElement.id = 'flash';
+let renderer = null;
+let stageScale = 1;
+
+function createRenderer() {
+  const instance = new THREE.WebGLRenderer({ antialias: true });
+  instance.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  instance.shadowMap.enabled = true;
+  instance.shadowMap.type = THREE.PCFSoftShadowMap;
+  return instance;
+}
+
+function fitStage() {
+  const width = gameElement.clientWidth, height = gameElement.clientHeight;
+  stageScale = Math.min(width / W, height / H);
+  const stageWidth = Math.floor(W * stageScale), stageHeight = Math.floor(H * stageScale);
+  Object.assign(stage.style, {
+    width: stageWidth + 'px', height: stageHeight + 'px',
+    left: Math.floor((width - stageWidth) / 2) + 'px', top: Math.floor((height - stageHeight) / 2) + 'px'
+  });
+  renderer.setSize(stageWidth, stageHeight, false);
+  hudRoot.style.transform = `scale(${stageScale})`;
+}
+
+const Effects = {
+  shakeUntil: 0, shakeIntensity: 0,
+  flash(duration, red, green, blue) {
+    flashElement.style.background = `rgb(${red}, ${green}, ${blue})`;
+    flashElement.animate([{ opacity: 0.8 }, { opacity: 0 }], { duration, easing: 'ease-out' });
+  },
+  shake(duration, intensity) {
+    this.shakeUntil = performance.now() + duration;
+    this.shakeIntensity = intensity;
+  },
+  apply(now) {
+    if (now >= this.shakeUntil) { shaker.style.transform = ''; return; }
+    const magnitude = this.shakeIntensity * W * stageScale;
+    shaker.style.transform = `translate(${rand(-magnitude, magnitude)}px, ${rand(-magnitude, magnitude)}px)`;
+  },
+  reset() {
+    this.shakeUntil = 0;
+    shaker.style.transform = '';
+    flashElement.getAnimations().forEach(animation => animation.cancel());
+  }
+};
+
+// ---------- HUD text ----------
+const FONT_SCALE = { display: 0.72, body: 1.35 };   // pixel font is wide: same size mapping as the 2D helpers
+
+class HudItem {
+  constructor(element, x, y, origin = [0.5, 0.5]) {
+    this.element = element;
+    this.origin = origin;
+    this._x = x; this._y = y; this._scale = 1; this._alpha = 1;
+    this.destroyed = false;
+    this.apply();
+  }
+  get x() { return this._x; } set x(value) { this._x = value; this.apply(); }
+  get y() { return this._y; } set y(value) { this._y = value; this.apply(); }
+  get scale() { return this._scale; } set scale(value) { this._scale = value; this.apply(); }
+  get alpha() { return this._alpha; } set alpha(value) { this._alpha = value; this.element.style.opacity = value; }
+  get visible() { return this.element.style.visibility !== 'hidden'; }
+  apply() {
+    const [originX, originY] = this.origin;
+    this.element.style.transform =
+      `translate(${this._x}px, ${this._y}px) scale(${this._scale}) translate(${-originX * 100}%, ${-originY * 100}%)`;
+  }
+  setText(text) { this.element.textContent = text; return this; }
+  setColor(color) { this.element.style.color = color; return this; }
+  setBackground(color) { this.element.style.background = color; return this; }
+  setVisible(visible) { this.element.style.visibility = visible ? 'visible' : 'hidden'; return this; }
+  destroy() { this.destroyed = true; this.element.remove(); }
+}
+
+// ---------- three.js building blocks ----------
+function standardMaterial(color, options = {}) {
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...options });
+}
+function basicMaterial(color, options = {}) {
+  return new THREE.MeshBasicMaterial({ color, ...options });
+}
+function mesh(geometry, material, { cast = true, receive = true } = {}) {
+  const result = new THREE.Mesh(geometry, material);
+  result.castShadow = cast;
+  result.receiveShadow = receive;
+  return result;
+}
+function at(object, x, y, z) { object.position.set(x, y, z); return object; }
+function box(width, height, depth, color, options) {
+  return mesh(new THREE.BoxGeometry(width, height, depth), standardMaterial(color, options));
+}
+// Axis-aligned box spanning the given world-space ranges
+function boxBetween(x0, x1, y0, y1, z0, z1, color, options) {
+  return at(box(Math.abs(x1 - x0), Math.abs(y1 - y0), Math.abs(z1 - z0), color, options), (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+}
+function sphere(radius, color, options) {
+  return mesh(new THREE.SphereGeometry(radius, 16, 12), standardMaterial(color, options));
+}
+function cylinder(radius, height, color, options, segments = 20) {
+  return mesh(new THREE.CylinderGeometry(radius, radius, height, segments), standardMaterial(color, options));
+}
+function eachMaterial(object, callback) {
+  object.traverse(child => {
+    if (!child.material) return;
+    (Array.isArray(child.material) ? child.material : [child.material]).forEach(callback);
+  });
+}
+function setOpacity(object, opacity) {
+  eachMaterial(object, material => {
+    if (!material.transparent) { material.transparent = true; material.needsUpdate = true; }
+    material.opacity = opacity;
+  });
+}
+function disposeTree(root) {
+  root.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.isLight && child.dispose) child.dispose();
+  });
+  eachMaterial(root, material => {
+    if (material.map) material.map.dispose();
+    material.dispose();
+  });
+}
+function addLights(scene, { sky = 0xFFFFFF, ground = 0x445566, hemi = 1.6, sun = 2.2, sunPos = [5, 12, 8], shadow = 12 } = {}) {
+  const hemiLight = new THREE.HemisphereLight(sky, ground, hemi);
+  const sunLight = new THREE.DirectionalLight(0xFFFFFF, sun);
+  sunLight.position.set(...sunPos);
+  if (shadow) {
+    sunLight.castShadow = true;
+    const shadowCamera = sunLight.shadow.camera;
+    Object.assign(shadowCamera, { left: -shadow, right: shadow, top: shadow, bottom: -shadow, near: 0.5, far: 80 });
+    sunLight.shadow.mapSize.set(1024, 1024);
+    sunLight.shadow.bias = -0.0008;
+  }
+  scene.add(hemiLight, sunLight);
+  return { hemi: hemiLight, sun: sunLight };
+}
+
+// Bean with a face; origin = middle of the feet, face looks along +z. mood: happy | worried | dead
+const BEAN_RADIUS = 0.425, BEAN_HEIGHT = 1.45;
+function makeBean(color, mood = 'happy', scale = 1, { glow = 0 } = {}) {
+  const group = new THREE.Group();
+  const bodyMaterial = standardMaterial(color, { roughness: 0.5, emissive: color, emissiveIntensity: glow });
+  const body = mesh(new THREE.CapsuleGeometry(BEAN_RADIUS, BEAN_HEIGHT - 2 * BEAN_RADIUS, 6, 18), bodyMaterial);
+  body.position.y = BEAN_HEIGHT / 2;
+  const face = new THREE.Group();
+  face.position.set(0, BEAN_HEIGHT * 0.7, BEAN_RADIUS * 0.94);
+  const eyes = new THREE.Group(), mouth = new THREE.Group();
+  face.add(eyes, mouth);
+  const eyeOffset = 0.175, mouthY = -BEAN_HEIGHT * 0.2;
+
+  if (mood === 'dead') {
+    for (const side of [-1, 1]) {
+      for (const tilt of [-1, 1]) {
+        const stroke = box(0.24, 0.055, 0.05, INK);
+        stroke.rotation.z = tilt * Math.PI / 4;
+        eyes.add(at(stroke, side * eyeOffset, 0, 0.02));
+      }
+    }
+    mouth.add(at(box(0.25, 0.055, 0.05, INK), 0, -BEAN_HEIGHT * 0.25, 0));
+  } else {
+    for (const side of [-1, 1]) {
+      eyes.add(at(sphere(0.15, 0xFFFFFF, { roughness: 0.3 }), side * eyeOffset, 0, 0));
+      eyes.add(at(sphere(0.075, INK, { roughness: 0.3 }), side * eyeOffset + 0.025, -0.025, 0.11));
+    }
+    if (mood === 'happy') {
+      const smile = mesh(new THREE.TorusGeometry(0.15, 0.035, 8, 16, Math.PI * 0.85), standardMaterial(INK));
+      smile.rotation.z = Math.PI + Math.PI * 0.075;
+      mouth.add(at(smile, 0, mouthY + 0.03, -0.02));
+    } else {
+      const gasp = sphere(0.1, INK);
+      gasp.scale.set(0.75, 1, 0.5);
+      mouth.add(at(gasp, 0, -BEAN_HEIGHT * 0.28, 0));
+    }
+  }
+  group.add(body, face);
+  group.scale.setScalar(scale);
+  group.userData = { body, face, eyes, mouth, baseScale: scale };
+  return group;
+}
+
+// ============================================================
+//  Screen: one three.js scene + HUD layer + own timers, tweens, keys
+// ============================================================
+class Screen {
+  constructor() {
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, W / H, 0.1, 300);
+    this.hud = document.createElement('div');
+    this.hud.className = 'layer';
+    this.clock = 0;
+    this.tweens = [];
+    this.timers = [];
+    this.keyHandlers = [];
+    this.anchored = [];
+    this.particles = [];
+    this.frameCallbacks = [];
+  }
+  enter() { hudRoot.append(this.hud); this.create(); }
+  exit() { this.hud.remove(); disposeTree(this.scene); }
+  create() {}
+  update(delta) {}
+
+  tick(delta) {
+    this.clock += delta;
+    this.runTimers();
+    this.runTweens(delta);
+    this.update(delta);
+    const dt = Math.min(delta, MAX_FRAME_MS) / 1000;
+    this.frameCallbacks.forEach(callback => callback(dt));
+    this.runParticles(dt);
+  }
+  render() {
+    renderer.render(this.scene, this.camera);
+    this.placeAnchored();
+  }
+  onFrame(callback) { this.frameCallbacks.push(callback); }
+
+  // --- timers ---
+  after(ms, callback) { this.timers.push({ at: this.clock + ms, callback }); }
+  repeatEvery(ms, count, callback, firstDelay = ms) {
+    let fired = 0;
+    const fire = () => { callback(fired); if (++fired < count) this.after(ms, fire); };
+    this.after(firstDelay, fire);
+  }
+  clearTimers() { this.timers = []; }
+  runTimers() {
+    const due = this.timers.filter(timer => timer.at <= this.clock);
+    this.timers = this.timers.filter(timer => timer.at > this.clock);
+    due.forEach(timer => timer.callback());
+  }
+
+  // --- tweens (numeric properties; repeat -1 = forever) ---
+  tween(target, props, { duration = 300, delay = 0, ease = Ease.linear, yoyo = false, repeat = 0, hold = 0, repeatDelay = 0, onUpdate, onComplete } = {}) {
+    const tween = { target, props, from: null, duration: Math.max(1, duration), delay, ease, yoyo, repeat, hold, repeatDelay, onUpdate, onComplete, elapsed: 0, done: false };
+    this.tweens.push(tween);
+    return tween;
+  }
+  runTweens(delta) {
+    for (const tween of this.tweens) {
+      if (tween.done) continue;
+      tween.elapsed += delta;
+      if (tween.elapsed < tween.delay) continue;
+      if (!tween.from) {
+        tween.from = {};
+        for (const key in tween.props) tween.from[key] = tween.target[key];
+      }
+      const forward = tween.duration;
+      const cycle = forward * (tween.yoyo ? 2 : 1) + tween.hold + tween.repeatDelay;
+      let local = tween.elapsed - tween.delay;
+      const loop = Math.floor(local / cycle);
+      const finished = tween.repeat >= 0 && loop > tween.repeat;
+      local -= loop * cycle;
+      let progress;
+      if (finished) progress = tween.yoyo ? 0 : 1;
+      else if (local < forward) progress = tween.ease(local / forward);
+      else if (local < forward + tween.hold) progress = 1;
+      else if (tween.yoyo && local < 2 * forward + tween.hold) progress = tween.ease(1 - (local - forward - tween.hold) / forward);
+      else progress = tween.yoyo ? 0 : 1;
+      for (const key in tween.props) tween.target[key] = tween.from[key] + (tween.props[key] - tween.from[key]) * progress;
+      if (tween.onUpdate) tween.onUpdate(tween.target);
+      if (finished) {
+        tween.done = true;
+        if (tween.onComplete) tween.onComplete();
+      }
+    }
+    this.tweens = this.tweens.filter(tween => !tween.done);
+  }
+  // Tweens an object's material opacity (Phaser-style alpha for 3D objects)
+  fade(object, to, options = {}) {
+    const state = { opacity: object.userData.opacity ?? 1 };
+    return this.tween(state, { opacity: to }, {
+      ...options,
+      onUpdate: () => { object.userData.opacity = state.opacity; setOpacity(object, state.opacity); }
+    });
+  }
+
+  // --- particles: fly, grow, spin and fade out, then get disposed ---
+  spawn(object, { velocity = new THREE.Vector3(), life = 1, grow = 0, spin = 0, gravity = 0, opacity = 1 } = {}) {
+    this.scene.add(object);
+    this.particles.push({ object, velocity, life, grow, spin, gravity, opacity, age: 0, baseScale: object.scale.x });
+  }
+  runParticles(dt) {
+    this.particles = this.particles.filter(particle => {
+      particle.age += dt;
+      const progress = particle.age / particle.life;
+      if (progress >= 1) {
+        this.scene.remove(particle.object);
+        disposeTree(particle.object);
+        return false;
+      }
+      particle.velocity.y -= particle.gravity * dt;
+      particle.object.position.addScaledVector(particle.velocity, dt);
+      particle.object.scale.setScalar(particle.baseScale * (1 + particle.grow * progress));
+      particle.object.rotation.z += particle.spin * dt;
+      setOpacity(particle.object, particle.opacity * (1 - progress));
+      return true;
+    });
+  }
+
+  // --- keys ---
+  onKey(code, handler, { repeat = false, once = false } = {}) {
+    this.keyHandlers.push({ code, handler, repeat, once });
+  }
+  handleKey(event) {
+    for (const binding of this.keyHandlers.slice()) {
+      if (binding.code !== ANY_KEY && binding.code !== event.code) continue;
+      if (event.repeat && !binding.repeat) continue;
+      if (binding.once) this.keyHandlers.splice(this.keyHandlers.indexOf(binding), 1);
+      binding.handler(event);
+    }
+  }
+
+  // --- HUD ---
+  element(styles, parent = this.hud) {
+    const element = document.createElement('div');
+    element.className = 'box';
+    for (const [key, value] of Object.entries(styles)) element.style[key] = typeof value === 'number' ? value + 'px' : value;
+    parent.append(element);
+    return element;
+  }
+  addText(x, y, text, size, color, font, { origin, stroke, background, padding, fontPx, border } = {}) {
+    const element = document.createElement('div');
+    element.className = `t ${font}`;
+    element.textContent = text;
+    element.style.fontSize = (fontPx ?? Math.round(size * FONT_SCALE[font])) + 'px';
+    element.style.color = color;
+    if (stroke) {
+      const [width, strokeColor] = stroke;
+      element.classList.add('stroked');
+      element.style.webkitTextStroke = `${width}px ${strokeColor}`;
+    }
+    if (background) element.style.background = background;
+    if (padding) element.style.padding = padding;
+    if (border) element.style.border = border;
+    this.hud.append(element);
+    return new HudItem(element, x, y, origin);
+  }
+  txt(x, y, text, size, color = PAPER_S, options) { return this.addText(x, y, text, size, color, 'display', options); }
+  body(x, y, text, size, color = PAPER_S, options) { return this.addText(x, y, text, size, color, 'body', options); }
+  // Neon sign text: black outline + glow, shrinks to fit the screen width
+  big(x, y, text, size, color = '#FFFFFF') {
+    const item = this.txt(x, y, text, size, color, { stroke: [Math.max(5, size / 8), INK_S] });
+    item.element.style.textShadow = `0 0 14px ${color}`;
+    const width = item.element.offsetWidth;
+    if (width > W - 40) item.scale = (W - 40) / width;
+    return item;
+  }
+  blink(item, ms = 480) { this.repeatEvery(ms, Infinity, () => item.setVisible(!item.visible)); }
+  frame(color) {
+    const neon = css(color);
+    this.element({ inset: '8px', border: `3px solid ${neon}`, boxShadow: `0 0 10px ${neon}, inset 0 0 10px ${neon}` });
+  }
+  // Keeps a HUD item glued to a 3D object (offset in world units)
+  anchor(item, object, offset = new THREE.Vector3(), maxDistance = Infinity) {
+    this.anchored.push({ item, object, offset, maxDistance });
+    return item;
+  }
+  placeAnchored() {
+    const point = new THREE.Vector3();
+    this.anchored = this.anchored.filter(entry => !entry.item.destroyed);
+    for (const { item, object, offset, maxDistance } of this.anchored) {
+      object.getWorldPosition(point).add(offset);
+      const inRange = point.distanceTo(this.camera.position) <= maxDistance;
+      point.project(this.camera);
+      item.element.style.display = inRange && point.z < 1 ? '' : 'none';
+      item.x = (point.x + 1) / 2 * W;
+      item.y = (1 - point.y) / 2 * H;
+    }
+  }
+
+  // Slowly falling starfield in front of a flat screen's backdrop
+  addStarfield(count) {
+    const positions = new Float32Array(count * 3), colors = new Float32Array(count * 3), speeds = [];
+    const halfWidth = 11, halfHeight = 6.5;
+    for (let i = 0; i < count; i++) {
+      const speed = 15 + Math.random() * 70, brightness = 0.25 + speed / 120;
+      positions.set([rand(-halfWidth, halfWidth), rand(-halfHeight, halfHeight), rand(-4, -1)], i * 3);
+      colors.set([brightness, brightness, brightness], i * 3);
+      speeds.push(speed * FLAT_UNIT);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const stars = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.07, vertexColors: true }));
+    this.scene.add(stars);
+    this.onFrame(dt => {
+      for (let i = 0; i < count; i++) {
+        positions[i * 3 + 1] -= speeds[i] * dt;
+        if (positions[i * 3 + 1] < -halfHeight) {
+          positions[i * 3 + 1] = halfHeight;
+          positions[i * 3] = rand(-halfWidth, halfWidth);
+        }
+      }
+      geometry.attributes.position.needsUpdate = true;
+    });
+  }
+  useFlatCamera() {
+    this.camera.position.set(0, 0, FLAT_DISTANCE);
+    this.camera.lookAt(0, 0, 0);
+  }
+  setFov(fov) {
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+  }
+}
+
+// ============================================================
+//  Base class for all minigames
+// ============================================================
+class MicroGame extends Screen {
+  // meta: { title, hint, duration (ms), bg, survive (outlasting the timer = win), timeoutMsg, winMsg }
+  constructor(meta) { super(); this.meta = meta; }
+
+  create() {
+    this.done = false;
+    this.spd = State.speed;
+    this.total = this.meta.duration / this.spd;
+    this.left = this.total;
+    this.lastSec = 99;
+    this.scene.background = new THREE.Color(this.meta.bg);
+
+    this.setup();
+
+    // Fuse at the bottom
+    const track = this.element({ left: 0, top: H - 12, width: W, height: 12, background: INK_S });
+    this.fuse = this.element({ inset: 0, background: NEON.green, transformOrigin: '0 0' }, track);
+    this.body(W / 2, H - 16, this.meta.hint, 0, NEON.cyan, { origin: [0.5, 1], fontPx: 22, background: INK_S, padding: '2px 10px' });
+
+    // Big announcement
+    const title = this.big(W / 2, H / 2 - 20, this.meta.title, 66, NEON.yellow);
+    const baseScale = title.scale;
+    title.scale = baseScale * 2;
+    this.tween(title, { scale: baseScale }, { duration: 220, ease: Ease.backOut });
+    this.tween(title, { alpha: 0, y: title.y - 40 }, { delay: 620, duration: 240, ease: Ease.quadIn });
+  }
+
+  update(delta) {
+    const dt = Math.min(delta, MAX_FRAME_MS) / 1000;
+    if (!this.done) {
+      this.left -= delta;
+      const fraction = Math.max(0, this.left / this.total);
+      this.fuse.style.transform = `scaleX(${fraction})`;
+      if (this.left < 1000) this.fuse.style.background = css(COL.alarm);
+      const sec = Math.ceil(this.left / 1000);
+      if (sec <= 3 && sec < this.lastSec && sec > 0) { this.lastSec = sec; Sfx.tick(); }
+
+      this.step(dt);
+
+      if (!this.done && this.left <= 0) {
+        if (this.meta.survive) this.win(this.meta.winMsg || 'Überlebt!');
+        else this.lose(this.meta.timeoutMsg || 'Zu langsam!');
+      }
+    }
+    this.animate(dt);
+  }
+
+  win(msg) {
+    if (this.done) return;
+    this.done = true;
+    State.result = { ok: true, msg };
+    Sfx.win();
+    if (this.onWin) this.onWin();
+    Effects.flash(180, 63, 208, 122);
+    this.after(750, () => Game.start('Transition'));
+  }
+
+  lose(msg) {
+    if (this.done) return;
+    this.done = true;
+    State.result = { ok: false, msg };
+    Sfx.lose();
+    if (this.onLose) this.onLose();
+    Effects.shake(260, 0.012);
+    this.after(this.loseDelay || 750, () => Game.start('Transition'));
+  }
+
+  onAction(callback) { this.onKey('Space', callback); }
+
+  setup() {}
+  step(dt) {}
+  animate(dt) {}   // runs every frame, also after the round is decided
+}
+
+// ============================================================
+//  1) FENSTER ZU! – timing
+// ============================================================
+const WINDOW_OPEN_ANGLE = 1.25;
+const WINDOW_FRAME = 10;
+
+class FensterZu extends MicroGame {
+  constructor() {
+    super({ title: 'FENSTER ZU!', hint: 'Leertaste, wenn es GENAU zu ist', duration: 4200, bg: COL.wall, timeoutMsg: 'Zu lange gezögert. Es zieht.' });
+  }
+  setup() {
+    this.p = 0; this.dir = 1; this.locked = false;
+    this.zone = [0.86, 0.94];
+    this.useFlatCamera();
+    addLights(this.scene, { sunPos: [-3, 5, 9], shadow: 9 });
+
+    const hole = { left: flatX(150), right: flatX(420), top: flatY(60), bottom: flatY(310) };
+    this.buildWall(hole);
+    this.buildOutside(hole);
+    this.buildSash(hole);
+    this.buildRadiator();
+    this.buildVent();
+    this.buildMeter();
+
+    this.onAction(() => this.press());
+    this.drawWindow();
+  }
+  buildWall(hole) {
+    const extent = 14, depth = 0.5;
+    this.scene.add(
+      boxBetween(-extent, hole.left, -extent, extent, -depth, 0, COL.wall),
+      boxBetween(hole.right, extent, -extent, extent, -depth, 0, COL.wall),
+      boxBetween(hole.left, hole.right, hole.top, extent, -depth, 0, COL.wall),
+      boxBetween(hole.left, hole.right, -extent, hole.bottom, -depth, 0, COL.wall));
+    const half = flatPx(WINDOW_FRAME) / 2, frameColor = 0x5B6B60;
+    this.scene.add(
+      boxBetween(hole.left - half, hole.right + half, hole.top - half, hole.top + half, -depth, 0.06, frameColor),
+      boxBetween(hole.left - half, hole.right + half, hole.bottom - half, hole.bottom + half, -depth, 0.06, frameColor),
+      boxBetween(hole.left - half, hole.left + half, hole.bottom, hole.top, -depth, 0.06, frameColor),
+      boxBetween(hole.right - half, hole.right + half, hole.bottom, hole.top, -depth, 0.06, frameColor));
+    // Window sill
+    this.scene.add(boxBetween(flatX(134), flatX(436), flatY(322), flatY(310), -depth, 0.5, 0x9AA396));
+  }
+  buildOutside(hole) {
+    const sky = new THREE.Mesh(new THREE.PlaneGeometry(hole.right - hole.left + 3, hole.top - hole.bottom + 3), basicMaterial(0x8EC6E6));
+    at(sky, (hole.left + hole.right) / 2, (hole.top + hole.bottom) / 2, -3);
+    this.scene.add(sky);
+    for (const [dx, dy, radius] of [[-30, 60, 16], [-50, 66, 13], [-14, 70, 11]]) {
+      const cloud = new THREE.Mesh(new THREE.SphereGeometry(flatPx(radius) * 1.4, 16, 12), basicMaterial(0xFFFFFF, { transparent: true, opacity: 0.85 }));
+      cloud.scale.set(1.3, 0.8, 0.4);
+      this.scene.add(at(cloud, hole.right + flatPx(dx) * 1.3, hole.top - flatPx(dy), -2.8));
+    }
+    // Draft: streaks of air blowing in through the gap
+    this.draft = [];
+    for (let i = 0; i < 3; i++) {
+      const streak = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.035, 0.035), basicMaterial(0xFFFFFF, { transparent: true, opacity: 0 }));
+      streak.rotation.z = 0.15;
+      this.scene.add(streak);
+      this.draft.push({ mesh: streak, y: flatY(60 + 70 + i * 50), phase: i / 3 });
+    }
+    this.hole = hole;
+  }
+  buildSash(hole) {
+    const inset = flatPx(WINDOW_FRAME) / 2, bar = flatPx(WINDOW_FRAME);
+    const width = hole.right - hole.left - 2 * inset, height = hole.top - hole.bottom - 2 * inset;
+    this.sash = at(new THREE.Group(), hole.left + inset, (hole.top + hole.bottom) / 2, -0.22);
+    const top = height / 2, bottom = -height / 2;
+    this.sash.add(
+      boxBetween(0, width, top - bar, top, -0.05, 0.05, COL.paper),
+      boxBetween(0, width, bottom, bottom + bar, -0.05, 0.05, COL.paper),
+      boxBetween(0, bar, bottom, top, -0.05, 0.05, COL.paper),
+      boxBetween(width - bar, width, bottom, top, -0.05, 0.05, COL.paper));
+    const glass = mesh(new THREE.PlaneGeometry(width - 2 * bar, height - 2 * bar),
+      standardMaterial(0xCDE9F3, { transparent: true, opacity: 0.45, roughness: 0.1, side: THREE.DoubleSide }), { cast: false });
+    this.sash.add(at(glass, width / 2, 0, 0));
+    this.sash.add(boxBetween(width - flatPx(26), width - flatPx(18), -flatPx(20), flatPx(20), 0.05, 0.14, COL.ink));
+    this.scene.add(this.sash);
+  }
+  buildRadiator() {
+    this.scene.add(boxBetween(flatX(165), flatX(405), flatY(352), flatY(330), 0, 0.3, 0xBFC7BC));
+    for (let x = 175; x < 400; x += 14) {
+      this.scene.add(boxBetween(flatX(x) - 0.02, flatX(x) + 0.02, flatY(350), flatY(332), 0.3, 0.34, 0x9AA396));
+    }
+  }
+  buildVent() {
+    const left = flatX(560), right = flatX(710), top = flatY(70), bottom = flatY(220), border = flatPx(2.5);
+    this.scene.add(boxBetween(left - border, right + border, bottom - border, top + border, 0, 0.3, COL.ink));
+    this.scene.add(boxBetween(left + border, right - border, bottom + border, top - border, 0, 0.34, 0xB8C1B6));
+    const centerX = flatX(635), centerY = flatY(145);
+    const duct = cylinder(flatPx(62), 0.04, 0x56625A, {}, 40);
+    duct.rotation.x = Math.PI / 2;
+    this.scene.add(at(duct, centerX, centerY, 0.36));
+
+    this.fan = at(new THREE.Group(), centerX, centerY, 0.45);
+    for (let i = 0; i < 3; i++) {
+      const holder = new THREE.Group();
+      holder.rotation.z = i * Math.PI * 2 / 3;
+      const blade = box(flatPx(56), flatPx(20), 0.04, 0xD7DDD3);
+      blade.position.x = flatPx(30);
+      blade.rotation.x = 0.4;
+      holder.add(blade);
+      this.fan.add(holder);
+    }
+    const hub = cylinder(flatPx(9), 0.12, COL.ink);
+    hub.rotation.x = Math.PI / 2;
+    this.fan.add(hub);
+    this.scene.add(this.fan);
+    this.fanTxt = this.txt(635, 245, 'LÜFTUNG: AUS', 18, '#E2382B');
+  }
+  buildMeter() {
+    const m = this.m = { x: 150, y: 372, w: 500, h: 24 };
+    this.element({ left: m.x - 4, top: m.y - 4, width: m.w + 8, height: m.h + 8, background: css(COL.ink) });
+    const segment = (from, to, color) => this.element({ left: m.x + m.w * from, top: m.y, width: m.w * (to - from), height: m.h, background: css(color) });
+    segment(0, 1, 0x7D8A80);
+    segment(this.zone[0], this.zone[1], COL.good);
+    segment(this.zone[1], 1, COL.alarm);
+    this.body(m.x + 20, m.y - 14, 'offen', 13, INK_TEXT);
+    this.body(m.x + m.w * 0.9, m.y - 14, '100 % ZU', 13, INK_TEXT);
+    this.body(m.x + m.w + 8, m.y - 14, 'zu fest', 13, '#E2382B');
+    this.marker = this.element({ left: m.x - 4, top: m.y - 9, width: 8, height: m.h + 18, background: css(COL.ink) });
+  }
+  drawWindow() {
+    this.sash.rotation.y = -(1 - this.p) * WINDOW_OPEN_ANGLE;
+    this.marker.style.left = (this.m.x + this.m.w * this.p - 4) + 'px';
+  }
+  step(dt) {
+    if (this.locked) return;
+    this.p += this.dir * dt / (0.95 / this.spd);
+    if (this.p >= 1) { this.p = 1; this.dir = -1; }
+    if (this.p <= 0) { this.p = 0; this.dir = 1; }
+    this.drawWindow();
+  }
+  animate(dt) {
+    const gap = (1 - this.p) * 90, strength = clamp((gap - 8) / 40, 0, 1);
+    for (const streak of this.draft) {
+      const progress = (this.clock / 650 + streak.phase) % 1;
+      at(streak.mesh, this.hole.right - 0.3 - progress * 1.4, streak.y - progress * 0.25, -1.2 + progress * 3.5);
+      streak.mesh.material.opacity = Math.sin(progress * Math.PI) * 0.9 * strength;
+    }
+  }
+  press() {
+    if (this.locked || this.done) return;
+    this.locked = true;
+    if (this.p >= this.zone[0] && this.p <= this.zone[1]) {
+      this.p = 1; this.drawWindow();
+      this.fanTxt.setText('LÜFTUNG: AN').setColor(css(COL.exit));
+      this.tween(this.fan.rotation, { z: this.fan.rotation.z - Math.PI * 8 }, { duration: 1100, ease: Ease.quadIn });
+      this.win('Lüftung läuft. Zum ersten Mal seit Jahren.');
+    } else {
+      const msg = this.p > this.zone[1] ? 'Zu fest gedrückt. Fenster springt wieder auf.' : 'Nicht ganz zu. Lüftung bleibt aus.';
+      this.tween(this, { p: 0 }, { duration: 260, ease: Ease.backOut, onUpdate: () => this.drawWindow() });
+      this.lose(msg);
+    }
+  }
+}
+
+// ============================================================
+//  2) WLAN FANGEN! – chase the signal
+// ============================================================
+function makeLaptop({ width = 1.3, depth = 0.9, lidAngle = 0.35, screenColor = 0x6B7A82 } = {}) {
+  const group = new THREE.Group();
+  group.add(boxBetween(-width / 2, width / 2, 0, 0.06, -depth / 2, depth / 2, 0x1A1A1A));
+  group.add(boxBetween(-width / 2 + 0.08, width / 2 - 0.08, 0.06, 0.075, -depth / 2 + 0.08, 0.1, 0x9BA4A8));
+  const lid = at(new THREE.Group(), 0, 0.06, -depth / 2);
+  lid.rotation.x = -lidAngle;
+  lid.add(boxBetween(-width / 2, width / 2, 0, depth, -0.05, 0, 0x1A1A1A));
+  const screenMaterial = basicMaterial(screenColor);
+  lid.add(at(mesh(new THREE.PlaneGeometry(width - 0.12, depth - 0.12), screenMaterial, { cast: false }), 0, depth / 2, 0.003));
+  group.add(lid);
+  return { group, screenMaterial };
+}
+
+class WlanFangen extends MicroGame {
+  constructor() {
+    super({ title: 'WLAN FANGEN!', hint: 'Pfeiltasten: Laptop ins Signal halten, bis der Upload durch ist', duration: 5200, bg: COL.slate, timeoutMsg: 'Upload abgebrochen. eduroam halt.' });
+  }
+  setup() {
+    this.setFov(28);
+    this.camera.position.set(0, 18, 12.5);
+    this.camera.lookAt(0, 0, 0.6);
+    addLights(this.scene, { sunPos: [4, 14, 6], shadow: 13 });
+
+    const floor = mesh(new THREE.PlaneGeometry(40, 30), standardMaterial(COL.slate), { cast: false });
+    floor.rotation.x = -Math.PI / 2;
+    this.scene.add(floor);
+    for (let y = 140; y < 420; y += 60) {   // rows of seats
+      this.scene.add(boxBetween(floorX(30), floorX(770), 0, 0.35, floorZ(y) - 0.2, floorZ(y) + 0.2, 0x2E3F48));
+    }
+
+    this.r = Math.max(62, 88 - (this.spd - 1) * 40);
+    this.sig = { x: W * 0.65, y: H * 0.55, vx: 0, vy: 0, on: true };
+    this.retarget = 0;
+    this.blink = 1.8 + Math.random() * 0.8;
+    this.signal = this.buildSignal();
+
+    this.lap = { x: 190, y: 300 };
+    this.tgt = { x: 190, y: 300 };
+    this.laptop = makeLaptop();
+    this.scene.add(this.laptop.group);
+
+    // Upload window
+    this.element({ left: 150, top: 22, width: 500, height: 62, background: css(COL.ink), borderRadius: '6px' });
+    this.element({ left: 166, top: 62, width: 468, height: 10, background: '#3A4A52' });
+    this.up = this.element({ left: 166, top: 62, width: 468, height: 10, background: css(COL.good), transformOrigin: '0 0', transform: 'scaleX(0)' });
+    this.body(166, 32, 'abgabe_final_v3_WIRKLICH_final.zip', 0, PAPER_S, { origin: [0, 0], fontPx: 19 });
+    this.status = this.body(634, 33, '', 0, '#E2382B', { origin: [1, 0], fontPx: 18 });
+    this.prog = 0;
+    this.need = 1.8 / this.spd;
+
+    this.drawAll(false);
+  }
+  buildSignal() {
+    const group = new THREE.Group(), materials = [];
+    const glow = opacity => {
+      const material = basicMaterial(COL.hazard, { transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
+      materials.push(material);
+      return material;
+    };
+    const radius = this.r * WORLD_UNIT;
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(radius, 48), glow(0.16));
+    disc.rotation.x = -Math.PI / 2;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(radius - 0.07, radius, 48), glow(0.7));
+    ring.rotation.x = -Math.PI / 2;
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 2.4, 48, 1, true), glow(0.08));
+    group.add(at(disc, 0, 0.03, 0), at(ring, 0, 0.04, 0), at(beam, 0, 1.2, 0));
+
+    const icon = at(new THREE.Group(), 0, 1.8, 0), arcAngle = Math.PI * 0.56;
+    for (let i = 1; i <= 3; i++) {
+      const arc = new THREE.Mesh(new THREE.TorusGeometry(i * 11 * WORLD_UNIT, 0.06, 6, 24, arcAngle), glow(1));
+      arc.rotation.z = Math.PI / 2 - arcAngle / 2;
+      icon.add(arc);
+    }
+    icon.add(new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 8), glow(1)));
+    group.add(icon);
+    this.scene.add(group);
+    return { group, icon, materials };
+  }
+  randomSpot() {
+    return { x: randInt(this.r + 20, W - this.r - 20), y: randInt(100 + this.r, H - 36 - this.r) };
+  }
+  step(dt) {
+    const mv = 340 * dt;
+    if (isDown('ArrowLeft')) this.tgt.x -= mv;
+    if (isDown('ArrowRight')) this.tgt.x += mv;
+    if (isDown('ArrowUp')) this.tgt.y -= mv;
+    if (isDown('ArrowDown')) this.tgt.y += mv;
+    this.tgt.x = clamp(this.tgt.x, 30, W - 30);
+    this.tgt.y = clamp(this.tgt.y, 100, H - 40);
+    const f = Math.min(1, dt * 12);
+    this.lap.x += (this.tgt.x - this.lap.x) * f;
+    this.lap.y += (this.tgt.y - this.lap.y) * f;
+
+    const s = this.sig;
+    this.retarget -= dt;
+    if (this.retarget <= 0) {
+      const a = Math.random() * Math.PI * 2, sp = (100 + Math.random() * 75) * this.spd;
+      s.vx = Math.cos(a) * sp; s.vy = Math.sin(a) * sp;
+      this.retarget = 0.45 + Math.random() * 0.6;
+    }
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    const minX = this.r + 10, maxX = W - this.r - 10, minY = 96 + this.r, maxY = H - 34 - this.r;
+    if (s.x < minX || s.x > maxX) { s.vx *= -1; s.x = clamp(s.x, minX, maxX); }
+    if (s.y < minY || s.y > maxY) { s.vy *= -1; s.y = clamp(s.y, minY, maxY); }
+
+    // eduroam dropout: signal vanishes and reappears somewhere else
+    this.blink -= dt;
+    if (this.blink <= 0 && s.on) {
+      this.blink = 1.9 + Math.random();
+      s.on = false;
+      this.after(320 / this.spd, () => { Object.assign(s, this.randomSpot()); s.on = true; });
+    }
+
+    const inside = s.on && distance(s.x, s.y, this.lap.x, this.lap.y) < this.r;
+    if (inside) this.prog += dt / this.need;
+    this.up.style.transform = `scaleX(${Math.min(1, this.prog)})`;
+    this.status.setText(inside ? 'verbunden' : (s.on ? 'Verbindung getrennt' : 'eduroam sucht …'));
+    this.status.setColor(inside ? '#3FD07A' : '#E2382B');
+    this.drawAll(inside);
+
+    if (this.prog >= 1) this.win('Abgabe hochgeladen. Um 23:59.');
+  }
+  drawAll(inside) {
+    const s = this.sig, signal = this.signal;
+    signal.group.visible = s.on;
+    signal.group.position.set(floorX(s.x), 0, floorZ(s.y));
+    const color = inside ? COL.good : COL.hazard;
+    signal.materials.forEach(material => material.color.setHex(color));
+    this.laptop.screenMaterial.color.setHex(inside ? COL.good : 0x6B7A82);
+  }
+  animate() {
+    const time = this.clock / 1000;
+    this.signal.icon.position.y = 1.8 + Math.sin(time * 4) * 0.12;
+    this.signal.icon.quaternion.copy(this.camera.quaternion);
+    this.laptop.group.position.set(floorX(this.lap.x), 0.75 + Math.sin(time * 3) * 0.05, floorZ(this.lap.y));
+  }
+  onLose() {   // upload aborts, error message pops up
+    this.loseDelay = 1300;
+    this.up.style.background = css(COL.alarm);
+    this.status.setText('Netzwerkfehler').setColor('#E2382B');
+    const upload = { fraction: Math.min(1, this.prog) };
+    this.tween(upload, { fraction: 0 }, { duration: 600, ease: Ease.quadIn, onUpdate: () => { this.up.style.transform = `scaleX(${upload.fraction})`; } });
+    const error = this.body(0, 0, 'ERR_TIMED_OUT', 0, PAPER_S, {
+      fontPx: 20, background: css(COL.alarm), padding: '5px 14px', border: `3px solid ${css(COL.ink)}`
+    });
+    error.scale = 0;
+    this.anchor(error, this.laptop.group, new THREE.Vector3(0, 1.5, 0));
+    this.tween(error, { scale: 1 }, { duration: 240, ease: Ease.backOut });
+  }
+}
+
+// ============================================================
+//  3) PLATZ FINDEN! – race for a seat
+// ============================================================
+const SEAT_HEIGHT = 0.46;
+function makeChair() {
+  const chair = new THREE.Group();
+  chair.add(boxBetween(-0.45, 0.45, 0.38, SEAT_HEIGHT, -0.375, 0.375, COL.chair));
+  chair.add(boxBetween(-0.45, 0.45, SEAT_HEIGHT, 1.05, 0.29, 0.375, COL.chair));   // backrest; chair faces the board (-z)
+  for (const x of [-0.38, 0.38]) {
+    for (const z of [-0.3, 0.3]) chair.add(boxBetween(x - 0.03, x + 0.03, 0, 0.38, z - 0.03, z + 0.03, 0x1C2A33));
+  }
+  return chair;
+}
+
+class Sitzplatz extends MicroGame {
+  constructor() {
+    super({ title: 'PLATZ FINDEN!', hint: 'Pfeiltasten: lauf zu einem freien Stuhl', duration: 4600, bg: COL.floor, timeoutMsg: 'Stehplatz. Wie jede Woche.' });
+  }
+  setup() {
+    this.setFov(30);
+    this.camera.position.set(0, 20, 15);
+    this.camera.lookAt(0, 0, 0.3);
+    addLights(this.scene, { sunPos: [-5, 14, 7], shadow: 13 });
+
+    const floor = mesh(new THREE.PlaneGeometry(40, 30), standardMaterial(COL.floor), { cast: false });
+    floor.rotation.x = -Math.PI / 2;
+    this.scene.add(floor);
+    const wallZ = floorZ(0);
+    this.scene.add(boxBetween(-16, 16, 0, 4, wallZ - 0.4, wallZ, COL.wall));
+    this.scene.add(boxBetween(floorX(266), floorX(534), 1.36, 2.94, wallZ, wallZ + 0.06, COL.ink));   // board
+    this.scene.add(boxBetween(floorX(270), floorX(530), 1.4, 2.9, wallZ, wallZ + 0.1, COL.paper));
+    const boardFoot = at(new THREE.Object3D(), 0, 1.1, wallZ + 0.2);
+    this.scene.add(boardFoot);
+    this.anchor(this.body(0, 0, 'Prof. gleich da', 13, INK_TEXT), boardFoot);
+    for (const x of [20, 734]) this.scene.add(boxBetween(floorX(x), floorX(x + 46), 0, 0.04, floorZ(396), floorZ(436), COL.exit));   // exits
+
+    const rowsY = [115, 190, 265];
+    rowsY.forEach((y, r) => {
+      if (r < 2) this.buildDesk(floorZ(y - 28));
+    });
+    const noDesk = at(new THREE.Object3D(), floorX(80), 0.2, floorZ(265));
+    this.scene.add(noDesk);
+    this.anchor(this.body(0, 0, 'ohne\nTisch', 12, INK_TEXT), noDesk);
+
+    this.seats = [];
+    const all = [];
+    rowsY.forEach((y, r) => { for (let i = 0; i < 7; i++) all.push({ x: 160 + i * 80, y, row: r }); });
+    const freeIdx = shuffle([...all.keys()]).slice(0, 4);
+    all.forEach((s, i) => {
+      s.taken = !freeIdx.includes(i);
+      this.scene.add(at(makeChair(), floorX(s.x), 0, floorZ(s.y)));
+      if (s.taken) this.scene.add(this.seated(makeBean(pick(STUDENT_COLORS), pick(['happy', 'worried']), 0.5), s));
+      this.seats.push(s);
+    });
+
+    this.rivals = [];
+    for (let i = 0; i < 8; i++) {
+      const x = randInt(60, 740), y = randInt(395, 425);
+      const bean = makeBean(pick(STUDENT_COLORS), 'happy', 0.5);
+      this.scene.add(at(bean, floorX(x), 0, floorZ(y)));
+      this.rivals.push({ x, y, bean, v: (130 + Math.random() * 50) * this.spd, delay: Math.random() * 0.15, target: null, seated: false });
+    }
+
+    this.pl = { x: 400, y: 412 };
+    this.player = makeBean(COL.hazard, 'happy', 0.6);
+    const marker = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.55, 32), basicMaterial(COL.hazard, { transparent: true, opacity: 0.8 }));
+    marker.rotation.x = -Math.PI / 2;
+    marker.position.y = 0.03 / 0.6;
+    this.player.add(marker);
+    this.scene.add(this.player);
+    this.anchor(this.txt(0, 0, 'DU', 11, INK_TEXT, { background: css(COL.hazard), padding: '3px 4px 2px', border: `2px solid ${css(COL.ink)}` }),
+      this.player, new THREE.Vector3(0, 1.25, 0));
+
+    this.freeTxt = this.txt(780, 10, '', 0, INK_TEXT, { origin: [1, 0], fontPx: 14 });
+    this.updateFree();
+  }
+  buildDesk(z) {
+    const left = floorX(125), right = floorX(675);
+    this.scene.add(boxBetween(left, right, 0.7, 0.78, z - 0.3, z + 0.3, 0x8B6B47));
+    for (const x of [left + 0.15, 0, right - 0.15]) {
+      for (const dz of [-0.22, 0.22]) this.scene.add(boxBetween(x - 0.04, x + 0.04, 0, 0.7, z + dz - 0.04, z + dz + 0.04, 0x4A3A28));
+    }
+  }
+  seated(bean, seat) {
+    bean.rotation.y = Math.PI;
+    return at(bean, floorX(seat.x), SEAT_HEIGHT - 0.02, floorZ(seat.y) + 0.05);
+  }
+  free() { return this.seats.filter(s => !s.taken); }
+  updateFree() { this.freeTxt.setText('FREI: ' + this.free().length); }
+  step(dt) {
+    // Player
+    const v = 210 * this.spd * dt;
+    const kx = (isDown('ArrowRight') ? 1 : 0) - (isDown('ArrowLeft') ? 1 : 0), ky = (isDown('ArrowDown') ? 1 : 0) - (isDown('ArrowUp') ? 1 : 0);
+    if (kx || ky) {
+      const n = Math.hypot(kx, ky);
+      this.pl.x += kx / n * v; this.pl.y += ky / n * v;
+      this.player.rotation.y = Math.atan2(kx, ky);
+    }
+    this.pl.x = clamp(this.pl.x, 20, W - 20);
+    this.pl.y = clamp(this.pl.y, 60, H - 30);
+    this.walk(this.player, this.pl.x, this.pl.y, kx || ky);
+
+    // Competition
+    for (const r of this.rivals) {
+      if (r.seated) continue;
+      if (r.delay > 0) { r.delay -= dt; continue; }
+      if (!r.target || r.target.taken) {
+        const f = this.free();
+        if (!f.length) continue;
+        f.sort((a, b) => distance(r.x, r.y, a.x, a.y) - distance(r.x, r.y, b.x, b.y));
+        r.target = pick(f.slice(0, 3));
+      }
+      const dx = r.target.x - r.x, dy = r.target.y - r.y, d = Math.hypot(dx, dy), m = Math.min(d, r.v * dt);
+      r.x += dx / d * m; r.y += dy / d * m;
+      r.bean.rotation.y = Math.atan2(dx, dy);
+      this.walk(r.bean, r.x, r.y, true);
+      if (d < 4) {
+        r.target.taken = true; r.seated = true;
+        this.seated(r.bean, r.target);
+        Sfx.blip(); this.updateFree();
+      }
+    }
+
+    // Player reached a chair?
+    for (const s of this.free()) {
+      if (distance(this.pl.x, this.pl.y, s.x, s.y) < 22) {
+        s.taken = true;
+        this.updateFree();
+        this.seated(this.player, s);
+        this.win(s.row === 2 ? 'Sitzplatz! Ohne Tisch, aber immerhin.' : 'Platz MIT Tisch. Jackpot.');
+        return;
+      }
+    }
+    if (!this.free().length) this.lose('Alle Plätze weg. Boden it is.');
+  }
+  walk(bean, x, y, moving) {
+    const hop = moving ? Math.abs(Math.sin(this.clock / 70)) * 0.12 : 0;
+    bean.position.set(floorX(x), hop, floorZ(y));
+  }
+  squash(bean, options) {
+    const base = bean.userData.baseScale;
+    return this.tween(bean.scale, { x: base * 1.3, y: base * 0.75, z: base * 1.3 }, options);
+  }
+  onWin() {   // plop down onto the chair
+    this.squash(this.player, { duration: 110, yoyo: true, ease: Ease.quadOut });
+  }
+  onLose() {   // plop onto the floor, the others gloat
+    this.loseDelay = 1500;
+    this.player.position.y = 0;
+    this.squash(this.player, { duration: 140, hold: 160, yoyo: true, ease: Ease.quadOut });
+    const floorText = this.txt(0, 0, 'BODEN.', 14, '#E2382B', { stroke: [5, PAPER_S] });
+    floorText.scale = 0;
+    this.anchor(floorText, this.player, new THREE.Vector3(0, 1.4, 0));
+    this.tween(floorText, { scale: 1 }, { duration: 260, ease: Ease.backOut });
+    for (const r of this.rivals) {
+      if (r.seated) this.tween(r.bean.position, { y: r.bean.position.y + 0.25 }, { duration: 110, yoyo: true, repeat: 2, delay: Math.random() * 250 });
+    }
+  }
+}
+
+// ============================================================
+//  4) FEUERALARM! – third-person runner down the funnel staircase.
+//     Straight wall on the left; on the right the funnel edge narrows
+//     towards the retrofitted handrail that fences off the usable part.
+// ============================================================
+const STAIR_STEP = 22;          // step depth in 2D px along the run
+const STAIR_DROP = 0.18;        // height of one step in world units
+const STAIR_THICKNESS = 0.6;
+const STAIR_WALL_HEIGHT = 2.6;
+const JUMP_HEIGHT = 1.1;
+const RUNNER_SCALE = 0.75;
+
+class Fluchttreppe extends MicroGame {
+  constructor() {
+    super({ title: 'FEUERALARM!', hint: '← → ausweichen · ↑ / Leertaste springen', duration: 6000, bg: 0x232B30, survive: true, winMsg: 'Draußen! Sammelplatz erreicht.' });
+  }
+  laneX(x) { return (x - 300) * WORLD_UNIT; }
+  stairZ(s) { return -s * WORLD_UNIT; }
+  stairY(s) { return -clamp(Math.floor(s / STAIR_STEP), 0, this.stepCount) * STAIR_DROP; }
+  edgeAt(s) {   // funnel edge slowly moves towards the middle
+    const f = clamp(s / this.FLIGHT, 0, 1);
+    return this.EDGE0 + (this.EDGE1 - this.EDGE0) * f;
+  }
+  setup() {
+    this.LW = 150;                 // left wall (straight)
+    this.RAIL = 452;               // retrofitted handrail (straight)
+    this.EDGE0 = 760;              // funnel edge at the top of the flight (wide)
+    this.EDGE1 = 470;              // funnel edge at the bottom (almost at the rail)
+    this.FLIGHT = 1880; this.D = 1980;  // ONE long flight from 1st floor to ground floor, landing, then out
+    this.lanes = [200, 300, 400];
+    this.stepCount = Math.floor(this.FLIGHT / STAIR_STEP);
+    this.sP = 0;
+    this.v = this.D / (this.total / 1000);       // arrives exactly when time is up
+    this.lane = 1;
+    this.jumpT = 0; this.jumpDur = 0.42;
+    this.inv = 0;
+    this.fireDist = 150;
+    this.fireCreep = 9;
+    this.hitCost = 58;
+    this.playerX = this.lanes[1];
+    this.feetY = 0;
+    this.view = { back: 7, up: 5.2, ahead: 5, follow: 0.5 };
+    this.lookTarget = new THREE.Vector3();
+
+    this.setFov(60);
+    this.scene.fog = new THREE.Fog(this.meta.bg, 16, 42);
+    this.lights = addLights(this.scene, { hemi: 1.3, sun: 2, shadow: 9 });
+    this.scene.add(this.lights.sun.target);
+
+    this.buildStairs();
+    this.buildLandings();
+    this.buildRail();
+    this.buildFunnelDecor();
+
+    // Obstacle rows: at most 2 of 3 lanes blocked
+    this.obs = [];
+    for (let s = 380; s < this.D - 120; s += randInt(105, 150)) {
+      const r = Math.random(), L = shuffle([0, 1, 2]);
+      if (r < 0.22) this.addObs(s, 'person', [L[0]]);
+      else if (r < 0.38) this.addObs(s, 'bag', [L[0]]);
+      else if (r < 0.62) { const a = Math.random() < 0.5 ? 0 : 1; this.addObs(s, 'group', [a, a + 1]); }
+      else if (r < 0.80) { this.addObs(s, 'person', [L[0]]); this.addObs(s, 'bag', [L[1]]); }
+      else {                                                       // lane changer: swerves shortly before
+        const from = L[0], to = from === 0 ? 1 : from === 2 ? 1 : (Math.random() < 0.5 ? 0 : 2);
+        this.addObs(s, 'person', [from]).wander = to;
+      }
+    }
+
+    this.player = makeBean(COL.hazard, 'happy', RUNNER_SCALE);
+    this.backpack = boxBetween(-0.28, 0.28, 0.45, 1.05, -0.64, -0.38, 0x2E5E8C);
+    this.player.add(this.backpack);
+    this.player.rotation.y = Math.PI;   // runs away from the camera
+    this.scene.add(this.player);
+    this.shadow = new THREE.Mesh(new THREE.CircleGeometry(0.45, 24), basicMaterial(0x000000, { transparent: true, opacity: 0.35, depthWrite: false }));
+    this.shadow.rotation.x = -Math.PI / 2;
+    this.scene.add(this.shadow);
+
+    this.buildFire();
+    this.heat = this.element({ inset: 0, background: css(COL.alarm), opacity: '0' });
+
+    // Controls
+    const left = () => this.setLane(this.lane - 1), right = () => this.setLane(this.lane + 1), jump = () => this.jump();
+    this.onKey('ArrowLeft', left, { repeat: true });
+    this.onKey('KeyA', left, { repeat: true });
+    this.onKey('ArrowRight', right, { repeat: true });
+    this.onKey('KeyD', right, { repeat: true });
+    this.onKey('ArrowUp', jump, { repeat: true });
+    this.onKey('KeyW', jump, { repeat: true });
+    this.onKey('Space', jump);
+
+    this.placePlayer(0);
+    this.placeObs();
+    this.animate(0);
+  }
+  buildStairs() {
+    const count = this.stepCount, geometry = new THREE.BoxGeometry(1, 1, 1);
+    const instanced = (color, options) => {
+      const steps = new THREE.InstancedMesh(geometry, standardMaterial(color, options), count);
+      steps.receiveShadow = true;
+      steps.frustumCulled = false;
+      this.scene.add(steps);
+      return steps;
+    };
+    const treads = instanced(0x8A949A), funnel = instanced(0x9C7F84), wall = instanced(0x3B454B);
+    const nosing = instanced(COL.hazard, { emissive: COL.hazard, emissiveIntensity: 0.25 }), curb = instanced(0x3B454B);
+    const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), size = new THREE.Vector3(), rotation = new THREE.Quaternion();
+    const put = (target, i, x0, x1, y0, y1, z0, z1) => {
+      position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+      size.set(Math.abs(x1 - x0), Math.abs(y1 - y0), Math.abs(z1 - z0));
+      target.setMatrixAt(i, matrix.compose(position, rotation, size));
+    };
+    for (let i = 0; i < count; i++) {
+      const s0 = i * STAIR_STEP, top = -i * STAIR_DROP, edge = this.laneX(this.edgeAt(s0 + STAIR_STEP / 2));
+      const front = this.stairZ(s0 + STAIR_STEP), back = this.stairZ(s0);
+      put(treads, i, this.laneX(this.LW), this.laneX(this.RAIL), top - STAIR_THICKNESS, top, front, back);
+      put(funnel, i, this.laneX(this.RAIL), edge, top - STAIR_THICKNESS, top, front, back);
+      put(wall, i, this.laneX(this.LW - 14), this.laneX(this.LW), top - STAIR_THICKNESS, top + STAIR_WALL_HEIGHT, front, back);
+      put(nosing, i, this.laneX(this.LW), this.laneX(this.LW + 18), top, top + 0.02, front, front + 0.1);
+      put(curb, i, edge - 0.06, edge + 0.06, top, top + 0.14, front, back);
+    }
+    [treads, funnel, wall, nosing, curb].forEach(steps => { steps.instanceMatrix.needsUpdate = true; });
+  }
+  buildLandings() {
+    const { LW, D } = this, bottomS = this.stepCount * STAIR_STEP, bottomY = this.stairY(bottomS);
+    const landingColor = 0x9AA3A8, wallColor = 0x3B454B;
+    const marker = (x, y, z) => { const point = at(new THREE.Object3D(), x, y, z); this.scene.add(point); return point; };
+
+    // 1st floor (start, extends behind the camera) and ground floor landing
+    this.scene.add(boxBetween(this.laneX(LW), this.laneX(this.EDGE0), -STAIR_THICKNESS, 0, this.stairZ(0), this.stairZ(-700), landingColor));
+    this.scene.add(boxBetween(this.laneX(LW - 14), this.laneX(LW), -STAIR_THICKNESS, STAIR_WALL_HEIGHT, this.stairZ(0), this.stairZ(-700), wallColor));
+    this.scene.add(boxBetween(this.laneX(LW), this.laneX(this.EDGE1), bottomY - STAIR_THICKNESS, bottomY, this.stairZ(D), this.stairZ(bottomS), landingColor));
+    this.scene.add(boxBetween(this.laneX(LW - 14), this.laneX(LW), bottomY - STAIR_THICKNESS, bottomY + STAIR_WALL_HEIGHT, this.stairZ(D), this.stairZ(bottomS), wallColor));
+    const labelStyle = [24, INK_TEXT];
+    const topLabel = this.txt(0, 0, '1. OG', ...labelStyle); topLabel.alpha = 0.5;
+    const groundLabel = this.txt(0, 0, 'EG', ...labelStyle); groundLabel.alpha = 0.5;
+    this.anchor(topLabel, marker(this.laneX((LW + this.EDGE0) / 2), 0.05, this.stairZ(-50)), undefined, 30);
+    this.anchor(groundLabel, marker(this.laneX((LW + this.EDGE1) / 2), bottomY + 0.05, this.stairZ((bottomS + D) / 2)), undefined, 30);
+
+    // Outside: assembly point lawn behind the emergency exit
+    this.scene.add(boxBetween(-40, 40, bottomY - 0.4, bottomY - 0.02, this.stairZ(D + 2000), this.stairZ(D), 0x4E8A3C));
+    const doorLeft = this.laneX(LW - 14), doorRight = this.laneX(this.EDGE1 + 14), doorZ = this.stairZ(D);
+    this.scene.add(
+      boxBetween(doorLeft, doorLeft + 0.35, bottomY, bottomY + 2.8, doorZ - 0.2, doorZ + 0.2, COL.exit),
+      boxBetween(doorRight - 0.35, doorRight, bottomY, bottomY + 2.8, doorZ - 0.2, doorZ + 0.2, COL.exit),
+      boxBetween(doorLeft, doorRight, bottomY + 2.8, bottomY + 3.6, doorZ - 0.2, doorZ + 0.2, COL.exit, { emissive: COL.exit, emissiveIntensity: 0.5 }));
+    this.anchor(this.txt(0, 0, 'NOTAUSGANG', 22, PAPER_S), marker((doorLeft + doorRight) / 2, bottomY + 3.2, doorZ + 0.25), undefined, 20);
+  }
+  buildRail() {
+    const bottomS = this.stepCount * STAIR_STEP, x = this.laneX(this.RAIL), railHeight = 1;
+    const start = new THREE.Vector3(x, railHeight, this.stairZ(0));
+    const end = new THREE.Vector3(x, this.stairY(bottomS) + railHeight, this.stairZ(bottomS));
+    const direction = end.clone().sub(start);
+    const rail = cylinder(0.06, direction.length(), 0xD9DEE1, { metalness: 0.6, roughness: 0.35 }, 10);
+    rail.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+    rail.position.copy(start).addScaledVector(direction, 0.5);
+    this.scene.add(rail);
+    for (let s = STAIR_STEP / 2; s < bottomS; s += STAIR_STEP * 8) {
+      const post = cylinder(0.04, railHeight, 0xD9DEE1, { metalness: 0.6, roughness: 0.35 }, 8);
+      const top = start.y + (end.y - start.y) * (s / bottomS);
+      this.scene.add(at(post, x, top - railHeight / 2, this.stairZ(s)));
+    }
+  }
+  buildFunnelDecor() {
+    for (const es of [120, 700, 1350]) {   // stranded freshmen in the funnel
+      const freshman = makeBean(0x7A4FB5, 'worried', 0.6);
+      this.scene.add(at(freshman, this.laneX((this.RAIL + this.edgeAt(es)) / 2 + 10), this.stairY(es), this.stairZ(es)));
+    }
+    for (const s of [300, 1000]) {
+      const point = at(new THREE.Object3D(), this.laneX((this.RAIL + this.edgeAt(s)) / 2 + 10), this.stairY(s) + 0.2, this.stairZ(s));
+      this.scene.add(point);
+      const label = this.body(0, 0, 'TOTER\nTRICHTER', 12, PAPER_S);
+      label.alpha = 0.75;
+      this.anchor(label, point, undefined, 22);
+    }
+  }
+  makePhoneUser(offsetX) {
+    const person = makeBean(pick(STUDENT_COLORS), 'worried', 0.72);
+    person.position.x = offsetX;
+    person.add(boxBetween(-0.13, 0.13, 0.68, 1.02, 0.6, 0.65, 0xDDE6EA, { emissive: 0x88AACC, emissiveIntensity: 0.8 }));   // phone in front of the nose
+    return person;
+  }
+  makeBag() {   // backpack on the floor: jump over it
+    const bag = new THREE.Group();
+    bag.add(boxBetween(-0.35, 0.35, 0, 0.42, -0.25, 0.25, 0x2C9C8F));
+    for (const x of [-0.18, 0.18]) bag.add(boxBetween(x - 0.05, x + 0.05, 0, 0.44, 0.24, 0.29, 0x1C6F65));
+    return bag;
+  }
+  addObs(s, type, lanes) {
+    const group = new THREE.Group();
+    const x = lanes.reduce((a, l) => a + this.lanes[l], 0) / lanes.length;
+    if (type === 'person') group.add(this.makePhoneUser(0));
+    else if (type === 'group') group.add(this.makePhoneUser(-50 * WORLD_UNIT), this.makePhoneUser(50 * WORLD_UNIT));
+    else group.add(this.makeBag());
+    this.scene.add(group);
+    const o = { s, type, lanes, x, group, low: type === 'bag', hit: false };
+    this.obs.push(o);
+    return o;
+  }
+  setLane(l) {
+    if (this.done) return;
+    if (l < 0 || l > 2) {                                         // wall or handrail
+      Sfx.tone(120, 0.08, 'square', 0.05);
+      this.tween(this, { playerX: this.lanes[this.lane] + (l < 0 ? -12 : 12) }, { duration: 50, yoyo: true });
+      return;
+    }
+    this.lane = l;
+    Sfx.tone(420, 0.04, 'triangle', 0.06);
+    this.tween(this, { playerX: this.lanes[l] }, { duration: 90, ease: Ease.quadOut });
+  }
+  jump() {
+    if (this.done || this.jumpT > 0) return;
+    this.jumpT = this.jumpDur;
+    Sfx.tone(480, 0.1, 'triangle', 0.07, 300);
+  }
+  hitObs(o) {
+    o.hit = true;
+    this.fireDist -= this.hitCost;
+    this.inv = 0.5;
+    Sfx.tone(180, 0.18, 'sawtooth', 0.07, -80);
+    Effects.shake(140, 0.008);
+    this.fade(o.group, 0.3, { duration: 200 });
+    const offset = new THREE.Vector3(0, 1.5, 0);
+    const popup = this.txt(0, 0, o.low ? 'ÜBER DEN RUCKSACK!' : 'SORRY!', 16, '#FFC61A', { stroke: [5, INK_TEXT] });
+    this.anchor(popup, this.player, offset);
+    this.tween(offset, { y: 2.6 }, { duration: 600 });
+    this.tween(popup, { alpha: 0 }, { duration: 600, onComplete: () => popup.destroy() });
+  }
+  placeObs() {
+    for (const o of this.obs) {
+      const ahead = o.s - this.sP;
+      o.group.visible = ahead > -300 && ahead < 1300;
+      o.group.position.set(this.laneX(o.x), this.stairY(o.s), this.stairZ(o.s));
+    }
+  }
+  placePlayer(dt) {
+    const stepTop = this.stairY(this.sP);
+    this.feetY += (stepTop - this.feetY) * Math.min(1, dt * 25);   // bobs down step by step
+    const j = this.jumpT > 0 ? Math.sin((1 - this.jumpT / this.jumpDur) * Math.PI) : 0;
+    this.player.position.set(this.laneX(this.playerX), this.feetY + j * JUMP_HEIGHT, this.stairZ(this.sP));
+    this.player.visible = !(this.inv > 0 && Math.floor(this.inv * 20) % 2);
+    this.shadow.position.set(this.player.position.x, stepTop + 0.02, this.player.position.z);
+    this.shadow.scale.setScalar(1 - j * 0.35);
+  }
+  buildFire() {
+    this.fire = new THREE.Group();
+    this.flames = [];
+    const cone = new THREE.ConeGeometry(0.38, 1, 7);
+    cone.translate(0, 0.5, 0);
+    const layers = [[COL.alarm, 1, 0], [0xFF8A1E, 0.55, 0.22], [COL.hazard, 0.28, 0.4]];
+    for (let x = this.LW - 10; x < this.EDGE0 + 20; x += 34) {
+      for (const [color, factor, z] of layers) {
+        const flame = new THREE.Mesh(cone, basicMaterial(color, { transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+        flame.position.set(this.laneX(x + 17), 0, z);
+        this.fire.add(flame);
+        this.flames.push({ mesh: flame, x, factor });
+      }
+    }
+    // Sea of fire behind the front, tilted along the stairs
+    const slope = new THREE.Group();
+    slope.rotation.x = -Math.atan(STAIR_DROP / (STAIR_STEP * WORLD_UNIT));
+    slope.add(boxBetween(this.laneX(this.LW - 40), this.laneX(this.EDGE0 + 40), -1, 0.2, 0, 30, 0xB3261E, { emissive: 0xB3261E, emissiveIntensity: 0.9 }));
+    this.fire.add(slope);
+    this.fireLight = at(new THREE.PointLight(0xFF6A1E, 12, 16, 1.2), 0, 1.6, -0.5);
+    this.fire.add(this.fireLight);
+    this.scene.add(this.fire);
+  }
+  drawFire() {
+    const fireS = this.sP - this.fireDist, time = this.clock / 1000;
+    this.fire.position.set(0, this.stairY(fireS), this.stairZ(fireS));
+    for (const { mesh: flame, x, factor } of this.flames) {
+      const height = (30 + 14 * Math.sin(time * 14 + x * 0.31) + Math.random() * 6) * WORLD_UNIT * 1.1;
+      flame.scale.set(1, height * factor, 1);
+    }
+    this.fireLight.intensity = 10 + Math.random() * 6;
+    this.heat.style.opacity = clamp((100 - this.fireDist) / 100, 0, 1) * 0.28;
+  }
+  updateCamera() {
+    const x = this.laneX(this.playerX), y = this.feetY, z = this.stairZ(this.sP), view = this.view;
+    this.camera.position.set(x * view.follow, y + view.up, z + view.back);
+    this.lookTarget.set(x * (view.follow + 0.2), y + 0.4, z - view.ahead);
+    this.camera.lookAt(this.lookTarget);
+    this.lights.sun.position.set(x + 4, y + 10, z + 4);
+    this.lights.sun.target.position.set(x, y, z - 3);
+  }
+  step(dt) {
+    this.sP += this.v * dt;
+    if (this.jumpT > 0) this.jumpT = Math.max(0, this.jumpT - dt);
+    if (this.inv > 0) this.inv -= dt;
+    this.fireDist -= this.fireCreep * this.spd * dt;
+
+    for (const o of this.obs) {                                    // lane changers swerve
+      if (o.wander === undefined || o.moved || o.s - this.sP > 250) continue;
+      o.moved = true;
+      this.tween(o, { x: this.lanes[o.wander] }, { duration: 320, ease: Ease.sineInOut });
+      this.after(140, () => { o.lanes = [o.wander]; });
+    }
+
+    for (const o of this.obs) {
+      if (o.hit || Math.abs(o.s - this.sP) > 20 || !o.lanes.includes(this.lane)) continue;
+      if (o.low && this.jumpT > 0) continue;
+      if (this.inv > 0) continue;
+      this.hitObs(o);
+      break;
+    }
+
+    this.placePlayer(dt);
+    this.placeObs();
+    if (this.fireDist <= 14) this.lose('Vom Feuer eingeholt. Zu oft gestolpert.');
+  }
+  animate() {
+    this.drawFire();
+    this.updateCamera();
+  }
+  onLose() {   // flames engulf, charred, crumbles to ash
+    this.loseDelay = 2700;
+    const player = this.player, base = RUNNER_SCALE;
+    Sfx.burn();
+    player.visible = true;
+    player.position.y = this.feetY;
+    this.shadow.visible = false;
+    this.tween(this.view, { back: 3.4, up: 1.7, ahead: 0, follow: 1 }, { duration: 700, ease: Ease.quadOut });
+
+    // Panic flailing while the fire shoots up
+    this.tween(player.scale, { x: base * 1.2, y: base * 0.85, z: base * 1.2 }, { duration: 70, yoyo: true, repeat: 3 });
+    this.tween(this, { fireDist: -50 }, { duration: 380, ease: Ease.quadIn });
+    this.tween(this, { fireDist: 80 }, { duration: 650, delay: 750, ease: Ease.quadOut });
+
+    // Charred version with cartoon eyes, revealed once the fire recedes
+    const { body, eyes, mouth } = player.userData;
+    this.after(380, () => {
+      body.material.color.setHex(0x1A1410);
+      this.backpack.material.color.setHex(0x1A1410);
+      mouth.visible = false;
+      eyes.scale.y = 0;
+      player.rotation.y = 0;
+    });
+    this.after(1250, () => this.tween(eyes.scale, { y: 1 }, { duration: 90 }));
+    this.after(1650, () => this.tween(eyes.scale, { y: 0 }, { duration: 70, yoyo: true }));
+
+    const origin = () => player.position.clone();
+    // Sparks
+    this.repeatEvery(45, 41, () => {
+      const spark = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.07), basicMaterial(pick([COL.hazard, 0xFF8A1E, COL.alarm]), { transparent: true }));
+      spark.position.copy(origin()).add(new THREE.Vector3(rand(-0.7, 0.7), rand(0, 0.6), rand(-0.3, 0.3)));
+      this.spawn(spark, { velocity: new THREE.Vector3(rand(-0.6, 0.6), rand(1.2, 2.6), rand(-0.3, 0.3)), life: rand(0.5, 0.9), spin: 6 });
+    }, 0);
+    // Smoke once the view clears
+    this.after(950, () => this.repeatEvery(110, 15, () => {
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 8), basicMaterial(0x555555, { transparent: true, opacity: 0.7 }));
+      puff.position.copy(origin()).add(new THREE.Vector3(rand(-0.2, 0.2), 0.9, 0));
+      this.spawn(puff, { velocity: new THREE.Vector3(rand(-0.35, 0.35), 1.6, 0), life: 1.1, grow: 3, opacity: 0.7 });
+    }, 0));
+
+    // Crumbles to a little pile of ash
+    this.after(1950, () => {
+      this.tween(player.scale, { y: base * 0.2, x: base * 1.3, z: base * 1.3 }, { duration: 380, ease: Ease.quadIn });
+      this.fade(player, 0, { duration: 380, ease: Ease.quadIn });
+      const ash = at(new THREE.Group(), player.position.x, this.feetY, player.position.z);
+      const heap = sphere(0.5, 0x3A3A3A); heap.scale.set(1, 0.35, 0.8);
+      const top = sphere(0.28, 0x5A5A5A); top.scale.set(1, 0.4, 0.8); top.position.set(-0.1, 0.1, 0);
+      ash.add(heap, top);
+      ash.scale.setScalar(0.001);
+      this.scene.add(ash);
+      this.tween(ash.scale, { x: 1, y: 1, z: 1 }, { duration: 300, ease: Ease.backOut });
+      for (let i = 0; i < 8; i++) {
+        const flake = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.07), basicMaterial(0x6A6A6A, { transparent: true }));
+        flake.position.copy(ash.position).add(new THREE.Vector3(0, 0.3, 0));
+        this.spawn(flake, { velocity: new THREE.Vector3(rand(-1.5, 1.5), rand(0.5, 1.2), rand(-0.8, 0.8)), life: 0.45, gravity: 4 });
+      }
+      const crispy = this.txt(0, 0, 'KROSS.', 14, '#FFC61A', { stroke: [5, INK_TEXT] });
+      crispy.scale = 0;
+      this.anchor(crispy, ash, new THREE.Vector3(0, 1.3, 0));
+      this.tween(crispy, { scale: 1 }, { duration: 220, delay: 200, ease: Ease.backOut });
+    });
+  }
+}
+
+// ============================================================
+//  5) SPEICHERN! – button mashing
+// ============================================================
+const SCREEN_TEXTURE_SCALE = 2;
+const SCREEN_PX = { width: 352, height: 232 };   // the 2D document window, rendered onto the lid
+
+class Speichern extends MicroGame {
+  constructor() {
+    super({ title: 'SPEICHERN!', hint: 'Hämmern! Leertaste (oder irgendeine Taste)', duration: 3600, bg: 0x4A2C2A, timeoutMsg: 'Akku leer. 14 Seiten weg.' });
+  }
+  setup() {
+    this.prog = 0;
+    this.inc = 0.055 * Math.sqrt(this.spd);
+    this.decay = 0.12 * this.spd;   // Word hangs: progress slides back when you slack off
+    this.status = 'Nicht gespeichert';
+    this.batteryDead = false;
+
+    this.camera.position.set(0, 3.6, 8.2);
+    this.camera.lookAt(0, 1.9, 0);
+    addLights(this.scene, { sky: 0xFFE2C4, ground: 0x4A2C2A, hemi: 1.3, sun: 1.6, sunPos: [-4, 9, 7], shadow: 8 });
+    const lamp = at(new THREE.PointLight(0xFFC27A, 18, 14, 1.4), 4.5, 4.5, 2);
+    this.scene.add(lamp);
+    this.scene.add(boxBetween(-12, 12, -0.5, 0, -4, 4, 0x6B4A2F, { roughness: 0.6 }));   // desk
+
+    this.buildLaptop();
+
+    // Battery indicator
+    this.battery = this.element({ left: 696, top: 30, width: 44, height: 22, border: `3px solid ${PAPER_S}` });
+    this.batteryNub = this.element({ left: 740, top: 36, width: 5, height: 10, background: PAPER_S });
+    this.batteryFill = this.element({ left: 700, top: 34, width: 36, height: 14, background: css(COL.alarm), transformOrigin: '0 0' });
+    this.pct = this.txt(684, 41, '', 0, PAPER_S, { origin: [1, 0.5], fontPx: 13 });
+
+    this.onAction(() => this.press());
+    this.onKey(ANY_KEY, event => { if (event.code !== 'Space') this.press(); });
+    this.step(0);
+  }
+  buildLaptop() {
+    const laptop = this.laptop = at(new THREE.Group(), 0, 0, 0.6);
+    laptop.add(boxBetween(-2.6, 2.6, 0, 0.16, -1.7, 1.7, 0x3A3A3A, { metalness: 0.3, roughness: 0.5 }));
+    laptop.add(boxBetween(-0.7, 0.7, 0.16, 0.17, 0.75, 1.5, 0x2E2E2E));   // trackpad
+    this.keys = [];
+    const columns = 14, rows = 4, keySize = 0.3, gap = 0.04;
+    for (let row = 0; row < rows; row++) {
+      for (let column = 0; column < columns; column++) {
+        const x = (column - (columns - 1) / 2) * (keySize + gap), z = -1.35 + row * (keySize + gap) + keySize / 2;
+        const key = at(box(keySize, 0.06, keySize, 0x1E1E1E), x, 0.19, z);
+        laptop.add(key);
+        this.keys.push(key);
+      }
+    }
+    const lid = at(new THREE.Group(), 0, 0.16, -1.7);
+    lid.rotation.x = -0.22;
+    lid.add(boxBetween(-2.6, 2.6, 0, 3.4, -0.12, 0, 0x2B2B2B, { metalness: 0.3, roughness: 0.5 }));
+    this.screenCanvas = document.createElement('canvas');
+    this.screenCanvas.width = SCREEN_PX.width * SCREEN_TEXTURE_SCALE;
+    this.screenCanvas.height = SCREEN_PX.height * SCREEN_TEXTURE_SCALE;
+    this.screenTexture = new THREE.CanvasTexture(this.screenCanvas);
+    this.screenTexture.colorSpace = THREE.SRGBColorSpace;
+    const screen = mesh(new THREE.PlaneGeometry(4.8, 4.8 * SCREEN_PX.height / SCREEN_PX.width), basicMaterial(0xFFFFFF, { map: this.screenTexture }), { cast: false });
+    lid.add(at(screen, 0, 1.7, 0.005));
+    laptop.add(lid);
+    this.scene.add(laptop);
+    this.drawScreen();
+  }
+  drawScreen() {
+    const context = this.screenCanvas.getContext('2d'), k = SCREEN_TEXTURE_SCALE, { width, height } = SCREEN_PX;
+    context.save();
+    context.scale(k, k);
+    if (this.batteryDead) {
+      context.fillStyle = '#000000';
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = '#E2382B';
+      context.font = '20px "Press Start 2P"';
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText('Akku leer', width / 2, 116);
+    } else {
+      context.fillStyle = '#EDEFF2';
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = css(COL.chair);
+      context.fillRect(0, 0, width, 24);
+      context.fillStyle = PAPER_S;
+      context.font = '18px VT323';
+      context.textBaseline = 'top';
+      context.fillText('Hausarbeit_FINAL_v7.docx', 10, 4);
+      context.fillStyle = '#C5CAD0';
+      for (let i = 0; i < 7; i++) context.fillRect(26, 40 + i * 16, 300 - (i % 3) * 60, 6);
+      context.fillRect(26, 182, 300, 18);
+      context.fillStyle = css(COL.exit);
+      context.fillRect(26, 182, 300 * this.prog, 18);
+      context.fillStyle = INK_TEXT;
+      context.font = '20px VT323';
+      context.textAlign = 'center';
+      context.textBaseline = 'bottom';
+      context.fillText(this.status, width / 2, 176);
+    }
+    context.restore();
+    this.screenTexture.needsUpdate = true;
+  }
+  press() {
+    if (this.done) return;
+    this.prog = Math.min(1, this.prog + this.inc);
+    Sfx.tone(260 + this.prog * 700, 0.04, 'square', 0.04);
+    this.laptop.scale.y = 0.97;
+    this.tween(this.laptop.scale, { y: 1 }, { duration: 70 });
+    const key = pick(this.keys);
+    key.position.y = 0.15;
+    this.tween(key.position, { y: 0.19 }, { duration: 90 });
+    this.status = 'Speichern … ' + Math.round(this.prog * 100) + ' %';
+    if (this.prog >= 1) {
+      this.status = 'Gespeichert ✓';
+      this.win('Gespeichert. Eine Sekunde später: Akku tot.');
+    }
+    this.drawScreen();
+  }
+  step(dt) {
+    if (!this.done && this.prog > 0 && dt > 0) {
+      this.prog = Math.max(0, this.prog - this.decay * dt);
+      this.status = this.prog > 0 ? 'Speichern … ' + Math.round(this.prog * 100) + ' %' : 'Nicht gespeichert';
+      this.drawScreen();
+    }
+    const frac = Math.max(0, this.left / this.total);
+    const blink = frac < 0.35 && Math.floor(this.left / 150) % 2 === 0;
+    const outline = blink ? css(COL.alarm) : PAPER_S;
+    this.battery.style.borderColor = outline;
+    this.batteryNub.style.background = outline;
+    this.batteryFill.style.transform = `scaleX(${Math.min(1, Math.max(0.06, frac * 0.25))})`;
+    this.pct.setText((3 * frac).toFixed(1).replace('.', ',') + ' %');
+  }
+  onLose() {
+    this.batteryDead = true;
+    this.drawScreen();
+    this.pct.setText('0,0 %');
+  }
+}
+
+// ============================================================
+//  6) KLO FINDEN! – floor hopping against locked toilets
+// ============================================================
+const BUILDING_DEPTH = 2.4;
+const SLAB_FRONT = -0.35;   // slabs stop short of the camera so upper floors stay visible
+
+class KloFinden extends MicroGame {
+  constructor() {
+    super({ title: 'KLO FINDEN!', hint: '↑ ↓ Stockwerk wechseln', duration: 6500, bg: 0xCBD3C7, timeoutMsg: 'Zu spät. Wir reden nicht drüber.' });
+  }
+  floorY(f) { return this.TOP + (5 - f) * this.BAND; }   // y of the floor edge, also for in-between values
+  setup() {
+    this.FL = ['EG', '1. OG', '2. OG', '3. OG', '4. OG'];
+    this.BAND = 76; this.TOP = 8; this.stairX = 150;
+    this.LABELS = ['GESPERRT', 'Außer Betrieb', 'Reinigung', 'Wasserschaden', 'Nur Personal', 'Defekt seit 2019', 'Bitte EG nutzen'];
+    this.openDur = 2.2 / this.spd;
+    this.gap = 1.25 / this.spd;
+    this.spawnT = this.gap;
+
+    this.look = new THREE.Vector3(0, 0, -1.2);
+    this.camera.position.set(1.3, 0.2, 9.6);
+    this.camera.lookAt(this.look);
+    this.lights = addLights(this.scene, { sunPos: [4, 8, 10], shadow: 10 });
+    this.spotlight = new THREE.PointLight(0xFFF2CC, 0, 4, 1.5);   // created up front: adding lights later recompiles every shader
+    this.scene.add(this.spotlight);
+    this.buildBuilding();
+
+    const highlightHeight = flatPx(this.BAND - 5);
+    this.hl = new THREE.Group();
+    this.hl.add(new THREE.Mesh(new THREE.BoxGeometry(flatPx(W), highlightHeight, BUILDING_DEPTH),
+      basicMaterial(COL.hazard, { transparent: true, opacity: 0.22, depthWrite: false })));
+    this.hl.children[0].position.set(0, highlightHeight / 2, -BUILDING_DEPTH / 2);
+    this.scene.add(this.hl);
+
+    this.doors = [];
+    for (let i = 0; i < 5; i++) {
+      const d = { x: randInt(430, 730), state: 'closed', t: 0, label: pick(this.LABELS) };
+      this.buildDoor(d, i);
+      this.doors.push(d);
+    }
+    // Start: you're on the 2nd floor, the next toilet opens all the way down
+    this.doors[0].state = 'soon'; this.doors[0].t = 0.9 / this.spd;
+    this.refreshSigns();
+
+    this.player = new THREE.Group();
+    for (const [x0, x1] of [[-9, -2], [2, 9]]) this.player.add(boxBetween(flatPx(x0), flatPx(x1), 0, flatPx(8), -0.08, 0.08, INK));
+    this.bean = at(makeBean(0xFFC234, 'worried', 0.85 * FLAT_SCALE), 0, flatPx(4), 0);
+    this.player.add(this.bean);
+    this.scene.add(this.player);
+    this.bubble = this.txt(0, 0, 'ZU!', 16, '#E2382B', { stroke: [5, PAPER_S] }).setVisible(false);
+    this.anchor(this.bubble, this.player, new THREE.Vector3(0, flatPx(72), 0));
+
+    this.pl = { fy: 2, x: this.stairX + 60 };
+    this.target = 2;
+    this.knocked = false;
+    this.placeHighlight(2);
+
+    this.onKey('ArrowUp', () => this.setTarget(this.target + 1), { repeat: true });
+    this.onKey('ArrowDown', () => this.setTarget(this.target - 1), { repeat: true });
+    this.placePlayer();
+    this.drawDoors();
+  }
+  buildBuilding() {
+    const back = -BUILDING_DEPTH, left = flatX(0), right = flatX(W), slab = 0x5B6B60;
+    const marker = (x, y, z) => { const point = at(new THREE.Object3D(), x, y, z); this.scene.add(point); return point; };
+    for (let i = 0; i < 5; i++) {
+      const yb = this.floorY(i), yt = yb - this.BAND;
+      this.scene.add(boxBetween(left, right, flatY(yb), flatY(yt), back - 0.1, back, i % 2 ? 0xD7DDD3 : 0xC6CFC2));
+      this.scene.add(boxBetween(left, right, flatY(yb), flatY(yb - 5), back - 0.1, SLAB_FRONT, slab));
+      this.anchor(this.body(0, 0, this.FL[i], 15, INK_TEXT), marker(flatX(42), flatY(yb - 36), back + 0.05));
+      if (i < 4) {   // stairs up to the next floor
+        for (let s = 0; s < 6; s++) {
+          this.scene.add(boxBetween(flatX(112 + s * 13), flatX(125 + s * 13), flatY(yb - 5), flatY(yb - 5 - (s + 1) * 12), back, back + 1.2, 0x8E989E));
+        }
+      }
+    }
+    const roof = flatY(this.floorY(4) - this.BAND), ground = flatY(this.floorY(0));
+    this.scene.add(boxBetween(left - 0.3, right + 0.3, roof, roof + 0.2, back - 0.1, SLAB_FRONT, slab));
+    this.scene.add(boxBetween(left - 0.3, left, ground, roof, back - 0.1, SLAB_FRONT, slab));
+    this.scene.add(boxBetween(right, right + 0.3, ground, roof, back - 0.1, SLAB_FRONT, slab));
+    this.scene.add(boxBetween(-20, 20, ground - 3, ground, back - 4, 4, 0x6F7A70));
+  }
+  buildDoor(d, floor) {
+    const group = at(new THREE.Group(), flatX(d.x), flatY(this.floorY(floor) - 5), -BUILDING_DEPTH + 0.05);
+    d.panel = boxBetween(-flatPx(22), flatPx(22), 0, flatPx(54), 0, 0.08, 0x7D8A80);
+    d.knob = at(sphere(flatPx(3), COL.ink), flatPx(14), flatPx(26), 0.1);
+    d.tape = at(new THREE.Group(), 0, flatPx(28), 0.12);   // barrier tape
+    for (const tilt of [-1, 1]) {
+      const strip = box(flatPx(62), flatPx(7), 0.02, COL.alarm);
+      strip.rotation.z = tilt * 0.74;
+      d.tape.add(strip);
+    }
+    d.lampMaterial = basicMaterial(0x4A5A50);
+    d.lamp = at(new THREE.Mesh(new THREE.SphereGeometry(flatPx(5), 12, 8), d.lampMaterial), flatPx(30), flatPx(50), 0.06);
+    group.add(d.panel, d.knob, d.tape, d.lamp);
+    this.scene.add(group);
+    d.sign = this.body(0, 0, '', 0, PAPER_S, { origin: [0.5, 1], fontPx: 15, padding: '2px 5px' });
+    this.anchor(d.sign, group, new THREE.Vector3(0, flatPx(66), 0));
+  }
+  placeHighlight(i) { this.hl.position.y = flatY(this.floorY(i) - 5); }
+  setTarget(i) {
+    i = clamp(i, 0, 4);
+    if (i === this.target || this.done) return;
+    this.target = i;
+    this.knocked = false;
+    this.bubble.setVisible(false);
+    this.placeHighlight(i);
+    Sfx.blip();
+  }
+  refreshSigns() {
+    for (const d of this.doors) {
+      if (d.state === 'open') d.sign.setText('WC').setBackground('#1E8A4C');
+      else if (d.state === 'soon') d.sign.setText('gleich frei').setBackground('#B8860B');
+      else d.sign.setText(d.label).setBackground('#E2382B');
+    }
+  }
+  drawDoors() {
+    for (const d of this.doors) {
+      const closing = d.state === 'open' && d.t < 0.55 / this.spd;
+      const flicker = closing && Math.floor(this.left / 90) % 2;
+      d.panel.material.color.setHex(d.state === 'open' ? COL.chair : 0x7D8A80);
+      d.tape.visible = d.state === 'closed';
+      d.lampMaterial.color.setHex(d.state === 'open' ? (flicker ? COL.alarm : COL.good) : d.state === 'soon' ? COL.hazard : 0x4A5A50);
+      d.sign.alpha = flicker ? 0.35 : 1;
+    }
+  }
+  placePlayer() {
+    const urgency = 1 - this.left / this.total;
+    const jitter = Math.sin(this.left / 22) * (1 + urgency * 3);   // pressure rises
+    this.player.position.set(flatX(this.pl.x + jitter), flatY(this.floorY(this.pl.fy) - 5), -0.9);
+  }
+  step(dt) {
+    // Doors switch state
+    let changed = false;
+    for (const d of this.doors) {
+      if (d.state === 'closed') continue;
+      d.t -= dt;
+      if (d.t > 0) continue;
+      if (d.state === 'soon') { d.state = 'open'; d.t = this.openDur; }
+      else { d.state = 'closed'; d.label = pick(this.LABELS); }
+      changed = true;
+    }
+    this.spawnT -= dt;
+    if (this.spawnT <= 0) {
+      this.spawnT = this.gap;
+      let cand = this.doors.map((d, i) => i).filter(i => this.doors[i].state === 'closed' && i !== this.target);
+      if (!cand.length) cand = this.doors.map((d, i) => i).filter(i => this.doors[i].state === 'closed');
+      if (cand.length) {
+        const d = this.doors[pick(cand)];
+        d.state = 'soon'; d.t = 0.55 / this.spd;
+        changed = true;
+      }
+    }
+    if (changed) this.refreshSigns();
+
+    // Player: first to the stairs, then change floors, then to the door
+    const p = this.pl, walk = 520 * this.spd * dt;
+    const toward = (tx) => { const dx = tx - p.x; p.x += Math.sign(dx) * Math.min(Math.abs(dx), walk); return Math.abs(tx - p.x) < 1; };
+    if (Math.abs(p.fy - this.target) > 0.001) {
+      if (toward(this.stairX)) {
+        const df = this.target - p.fy, m = dt / (0.22 / this.spd);
+        p.fy += Math.sign(df) * Math.min(Math.abs(df), m);
+      }
+    } else {
+      p.fy = this.target;
+      const d = this.doors[this.target];
+      if (toward(d.x)) {
+        if (d.state === 'open') {
+          this.bubble.setText('PUH!').setColor('#1E8A4C').setVisible(true);
+          const f = this.FL[this.target];
+          this.win(this.target === 0 ? 'Im EG. Hätte man auch gleich haben können.' : 'Gefunden im ' + f + '. Rettung in letzter Sekunde.');
+        } else if (!this.knocked) {
+          this.knocked = true;
+          Sfx.tone(140, 0.14, 'square', 0.06);
+          this.bubble.setText(d.state === 'soon' ? 'GLEICH …' : 'ZU!').setColor(d.state === 'soon' ? '#B8860B' : '#E2382B').setVisible(true);
+        } else if (d.state === 'soon') {
+          this.bubble.setText('GLEICH …').setColor('#B8860B');
+        }
+      }
+    }
+    this.placePlayer();
+    this.drawDoors();
+  }
+  onLose() {   // too late: accident
+    this.loseDelay = 2600;
+    const player = this.player, origin = player.position.clone(), BROWN = 0x6B3F1D;
+    this.hl.visible = false;
+
+    // Lights go down, a spotlight of shame stays on the player
+    this.tween(this.lights.hemi, { intensity: this.lights.hemi.intensity * 0.3 }, { duration: 400 });
+    this.tween(this.lights.sun, { intensity: this.lights.sun.intensity * 0.3 }, { duration: 400 });
+    this.spotlight.position.set(origin.x, origin.y + 1, origin.z + 1.2);
+    this.tween(this.spotlight, { intensity: 5 }, { duration: 400 });
+
+    // Camera zooms in
+    const cameraTarget = { x: origin.x, y: origin.y + 0.55, z: origin.z + 3.6 };
+    this.tween(this.camera.position, cameraTarget, { duration: 600, ease: Ease.quadOut, onUpdate: () => this.camera.lookAt(this.look) });
+    this.tween(this.look, { x: origin.x, y: origin.y + 0.5, z: origin.z }, { duration: 600, ease: Ease.quadOut });
+    this.bubble.setText('OH NEIN …').setColor('#6B3F1D').setVisible(true);
+
+    // Squeeze, then lose the battle
+    this.tween(player.scale, { x: 1.15, y: 0.85, z: 1.15 }, { duration: 90, yoyo: true, repeat: 3 });
+    this.after(450, () => {
+      Sfx.fart();
+      Effects.shake(400, 0.006);
+      const stain = sphere(flatPx(9), BROWN, { roughness: 0.4 });
+      stain.scale.set(0.001, 0.001, 0.001);
+      player.add(at(stain, 0, flatPx(10), flatPx(13)));
+      this.tween(stain.scale, { x: 1, y: 0.65, z: 0.5 }, { duration: 500, ease: Ease.backOut });
+
+      const puddle = mesh(new THREE.CylinderGeometry(flatPx(28), flatPx(28), 0.015, 32), standardMaterial(BROWN, { roughness: 0.2 }), { cast: false });
+      puddle.scale.set(0.001, 1, 0.001);
+      this.scene.add(at(puddle, origin.x, origin.y + 0.01, origin.z));
+      this.tween(puddle.scale, { x: 1, z: 0.6 }, { duration: 900, delay: 300, ease: Ease.quadOut });
+      for (let i = 0; i < 4; i++) {
+        const drop = at(sphere(flatPx(2.5), BROWN), origin.x + flatPx(rand(-7, 7)), origin.y + flatPx(6), origin.z + flatPx(10));
+        this.scene.add(drop);
+        this.tween(drop.position, { y: origin.y }, {
+          duration: 260, delay: 150 + i * 180, repeat: 2, repeatDelay: 200,
+          onComplete: () => { this.scene.remove(drop); disposeTree(drop); }
+        });
+      }
+    });
+
+    // Stink lines
+    this.repeatEvery(170, 12, () => {
+      const points = [];
+      for (let k = 0; k <= 10; k++) points.push(new THREE.Vector3(Math.sin(k * 0.9) * flatPx(5), k * flatPx(3), 0));
+      const stink = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 24, 0.02, 5),
+        basicMaterial(0x9BBF3A, { transparent: true, opacity: 0.9 }));
+      stink.position.set(origin.x + flatPx(rand(-18, 18)), origin.y + flatPx(20), origin.z + 0.3);
+      this.spawn(stink, { velocity: new THREE.Vector3(0, flatPx(45) / 0.9, 0), life: 0.9, opacity: 0.9 });
+    }, 720);
+
+    // Flies
+    this.after(900, () => {
+      this.bubble.setText('💩').setVisible(true);
+      this.bubble.scale = 0;
+      this.tween(this.bubble, { scale: 1.4 }, { duration: 300, ease: Ease.backOut });
+      for (let i = 0; i < 3; i++) {
+        const fly = new THREE.Group();
+        fly.add(sphere(flatPx(2.5), COL.ink));
+        for (const side of [-1, 1]) {
+          const wing = new THREE.Mesh(new THREE.SphereGeometry(flatPx(3), 8, 6), basicMaterial(0xFFFFFF, { transparent: true, opacity: 0.7 }));
+          wing.scale.set(1, 0.6, 0.3);
+          fly.add(at(wing, side * flatPx(3), flatPx(3), 0));
+        }
+        this.scene.add(fly);
+        const radius = flatPx(18 + i * 7), phase = i * 2.1, orbit = { angle: 0 };
+        this.tween(orbit, { angle: Math.PI * 6 }, {
+          duration: 1700,
+          onUpdate: () => {
+            const a = orbit.angle * (i % 2 ? -1 : 1) + phase;
+            fly.position.set(origin.x + Math.cos(a) * radius, origin.y + flatPx(22) + Math.sin(a * 1.7) * radius * 0.5, origin.z + Math.sin(a) * radius * 0.6);
+          }
+        });
+      }
+    });
+  }
+}
+
+// ============================================================
+//  Title, interstitial, game over
+// ============================================================
+function startRun() {
+  resetRun();
+  Music.start(State.speed);
+  Game.start('Transition');
+}
+
+const GRID_CELL = 2;
+
+class Title extends Screen {
+  create() {
+    const scene = this.scene;
+    scene.background = new THREE.Color(INK);
+    scene.fog = new THREE.Fog(INK, 30, 95);
+    this.camera.position.set(0, 1.2, 7.5);
+    this.camera.lookAt(0, 1.9, 0);
+    addLights(scene, { hemi: 1.2, sun: 2, sunPos: [3, 6, 8], shadow: 6 });
+    this.buildSynthwave();
+
+    // Three bouncing beans on the grid
+    [[0xFF2E88, 'happy'], [0xFFE600, 'worried'], [0x00E5FF, 'happy']].forEach(([color, mood], i) => {
+      const bean = at(makeBean(color, mood, 1.2, { glow: 0.25 }), (i - 1) * 1.9, 0, 0);
+      scene.add(bean);
+      this.tween(bean.position, { y: 0.5 }, { duration: 240, yoyo: true, repeat: -1, delay: i * 120, ease: Ease.sineOut });
+      this.tween(bean.scale, { y: 1.27 }, { duration: 240, yoyo: true, repeat: -1, delay: i * 120, ease: Ease.sineOut });
+      this.onFrame(() => { bean.rotation.y = Math.sin(this.clock / 500 + i) * 0.35; });
+    });
+
+    this.frame(0xFF2E88);
+    this.body(W / 2, 36, 'HI-SCORE  ' + pad(State.best * 100), 18, NEON.pink);
+    this.big(W / 2, 84, 'DUMB WAYS TO', 34, NEON.cyan);
+    const title = this.big(W / 2, 140, 'EXMATRIKULATION', 70, NEON.yellow);
+    this.tween(title, { alpha: 0.82 }, { duration: 90, yoyo: true, repeat: -1, repeatDelay: 2400 });   // neon flicker
+    this.body(W / 2, 186, 'So viele dumme Arten, von der DHBW zu fliegen.', 17, '#FFFFFF');
+
+    const coin = this.big(W / 2, 382, 'INSERT COIN', 30, NEON.yellow);
+    this.blink(coin);
+    this.body(W / 2, 412, 'LEERTASTE = MÜNZE EINWERFEN', 16, NEON.cyan);
+    this.body(W / 2, 434, '© 2026 DHBW ARCADE   ·   CREDIT 00', 13, '#8A8AB8');
+
+    let started = false;
+    const start = () => {
+      if (started) return; started = true;
+      Sfx.init(); Sfx.coin();
+      coin.setText('CREDIT 01').setVisible(true);
+      this.clearTimers();
+      Effects.flash(200, 255, 230, 0);
+      this.after(550, startRun);
+    };
+    this.onKey('Space', start, { once: true });
+    this.onKey('Enter', start, { once: true });
+  }
+  buildSynthwave() {
+    const scene = this.scene;
+    const ground = mesh(new THREE.PlaneGeometry(200, 200), standardMaterial(0x12052A), { cast: false });
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+    const grid = new THREE.GridHelper(200, 200 / GRID_CELL, 0xB24DFF, 0xB24DFF);
+    grid.position.y = 0.01;
+    scene.add(grid);
+    this.onFrame(dt => { grid.position.z = (grid.position.z + dt * 0.8 * GRID_CELL) % GRID_CELL; });
+    const horizon = boxBetween(-100, 100, 0, 0.15, -100, -99.8, 0xFF2E88);
+    horizon.material = basicMaterial(0xFF2E88, { fog: false });
+    scene.add(horizon);
+
+    // Striped synthwave sun
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 256;
+    const context = canvas.getContext('2d');
+    const gradient = context.createLinearGradient(0, 0, 0, 256);
+    gradient.addColorStop(0, NEON.yellow);
+    gradient.addColorStop(1, NEON.pink);
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 256, 256);
+    for (let y = 140, gap = 3; y < 256; y += 18, gap += 2) context.clearRect(0, y, 256, gap);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sun = new THREE.Mesh(new THREE.CircleGeometry(16, 64), basicMaterial(0xFFFFFF, { map: texture, transparent: true, fog: false }));
+    scene.add(at(sun, 0, 7, -98));
+
+    const count = 300, positions = new Float32Array(count * 3), speeds = [];
+    for (let i = 0; i < count; i++) {
+      positions.set([rand(-110, 110), rand(2, 70), rand(-96, -60)], i * 3);
+      speeds.push(rand(0.4, 2.2));
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    scene.add(new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.35, color: 0xFFFFFF, fog: false })));
+    this.onFrame(dt => {
+      for (let i = 0; i < count; i++) {
+        positions[i * 3 + 1] -= speeds[i] * dt;
+        if (positions[i * 3 + 1] < 2) { positions[i * 3 + 1] = 70; positions[i * 3] = rand(-110, 110); }
+      }
+      geometry.attributes.position.needsUpdate = true;
+    });
+  }
+}
+
+class Transition extends Screen {
+  create() {
+    this.scene.background = new THREE.Color(INK);
+    this.useFlatCamera();
+    addLights(this.scene, { hemi: 1.4, sun: 2, sunPos: [2, 4, 9], shadow: 0 });
+    const r = State.result;
+    State.result = null;
+    if (r) { State.round++; if (r.ok) State.score++; else State.lives--; }
+    const dead = State.lives <= 0;
+    const spedUp = !!r && !dead && State.round % 5 === 0;
+    if (spedUp) { State.speed = Math.round((State.speed + 0.15) * 100) / 100; Music.setSpeed(State.speed); }
+
+    this.addStarfield(50);
+    this.frame(r ? (r.ok ? 0x39FF14 : 0xFF2E88) : 0x00E5FF);
+
+    // Arcade HUD
+    [['1UP', pad(State.score * 100)], ['HI-SCORE', pad(Math.max(State.best, State.score) * 100)], ['STAGE', pad(State.round + 1, 2)]].forEach(([k, v], i) => {
+      this.txt(160 + i * 240, 38, k, 18, NEON.pink);
+      this.txt(160 + i * 240, 62, v, 18, '#FFFFFF');
+    });
+
+    if (r) {
+      this.big(W / 2, 140, r.ok ? 'GESCHAFFT!' : 'DANEBEN!', 46, r.ok ? NEON.green : NEON.pink);
+      this.body(W / 2, 190, r.msg, 18, '#FFFFFF');
+    } else {
+      this.big(W / 2, 140, 'GET READY!', 46, NEON.yellow);
+      this.body(W / 2, 190, 'Überlebe so viele Runden wie möglich.', 18, '#FFFFFF');
+    }
+
+    // Lives as beans
+    const beanScale = 0.85 * FLAT_SCALE;
+    for (let i = 0; i < LIVES; i++) {
+      const alive = i < State.lives, justLost = r && !r.ok && i === State.lives;
+      const color = alive || justLost ? NEON_HEX[i] : 0x3A3A5C;
+      const bean = at(makeBean(color, alive ? 'happy' : 'dead', beanScale, { glow: alive ? 0.2 : 0 }), flatX(W / 2 + (i - 1.5) * 64), flatY(296), 0);
+      this.scene.add(bean);
+      if (alive) {
+        this.tween(bean.scale, { y: beanScale * 1.08 }, { duration: 220, yoyo: true, repeat: -1, delay: i * 90 });
+        this.tween(bean.position, { y: flatY(292) }, { duration: 220, yoyo: true, repeat: -1, delay: i * 90 });
+        this.onFrame(() => { bean.rotation.y = Math.sin(this.clock / 400 + i) * 0.4; });
+      }
+      if (justLost) {
+        this.tween(bean.rotation, { z: -Math.PI / 2 }, { duration: 450, delay: 250, ease: Ease.bounceOut });
+        this.tween(bean.position, { y: flatY(308) }, { duration: 450, delay: 250, ease: Ease.bounceOut });
+        this.fade(bean, 0.3, { duration: 120, yoyo: true, repeat: 3 });
+      }
+    }
+    this.body(W / 2, 320, 'LIVES', 15, '#8A8AB8');
+
+    if (dead) { this.after(1100, () => Game.start('GameOver')); return; }
+
+    if (spedUp) {
+      const t = this.big(W / 2, 368, 'SPEED UP!', 38, NEON.orange);
+      this.body(W / 2, 404, 'Der Prof redet jetzt schneller.', 16, '#FFFFFF');
+      this.tween(t, { scale: t.scale * 1.15 }, { duration: 160, yoyo: true, repeat: 3 });
+      Sfx.faster();
+    }
+    const next = nextGameKey();
+    this.after(spedUp ? 2000 : (r ? 1350 : 1600), () => Game.start(next));
+  }
+}
+
+class GameOver extends Screen {
+  create() {
+    this.scene.background = new THREE.Color(INK);
+    this.useFlatCamera();
+    addLights(this.scene, { hemi: 1.4, sun: 2, sunPos: [2, 4, 9], shadow: 0 });
+    const newBest = State.score > State.best;
+    if (newBest) { State.best = State.score; saveBest(); }
+    Music.stop();
+    Sfx.over();
+
+    this.addStarfield(40);
+    this.frame(0xFF2E88);
+    this.big(W / 2, 70, 'GAME OVER', 64, NEON.pink);
+    this.txt(W / 2, 120, 'EXMATRIKULIERT', 22, NEON.cyan);
+
+    // Toppled bean with a graduation cap
+    const scale = 1.1 * FLAT_SCALE;
+    const bean = makeBean(0xFFE600, 'dead', 1, { glow: 0.15 });
+    bean.add(boxBetween(-0.65, 0.65, BEAN_HEIGHT + 0.12, BEAN_HEIGHT + 0.32, -0.65, 0.65, 0x222244));
+    bean.add(boxBetween(-0.35, 0.35, BEAN_HEIGHT - 0.1, BEAN_HEIGHT + 0.14, -0.35, 0.35, 0x222244));
+    const tassel = cylinder(0.04, 0.5, 0xFFE600, {}, 6);
+    bean.add(at(tassel, 0.6, BEAN_HEIGHT + 0.02, 0.6));
+    bean.position.y = -BEAN_HEIGHT / 2;
+    const lying = new THREE.Group();
+    lying.add(bean);
+    lying.rotation.z = Math.PI / 2;
+    const holder = at(new THREE.Group(), flatX(W / 2), flatY(190), 0);
+    holder.scale.setScalar(scale);
+    holder.rotation.x = 0.35;   // look slightly down onto the cap
+    holder.add(lying);
+    this.scene.add(holder);
+    this.onFrame(() => { holder.rotation.y = Math.sin(this.clock / 700) * 0.5; });
+
+    this.txt(W / 2, 252, 'SCORE  ' + pad(State.score * 100), 20, '#FFFFFF');
+    if (newBest) {
+      const t = this.big(W / 2, 284, 'NEW HI-SCORE!', 24, NEON.yellow);
+      this.blink(t, 250);
+    } else {
+      this.txt(W / 2, 284, 'HI-SCORE  ' + pad(State.best * 100), 16, NEON.pink);
+    }
+
+    // Continue countdown: space restarts, at 0 back to the title
+    this.big(W / 2, 336, 'CONTINUE?', 30, NEON.yellow);
+    let n = 9;
+    const num = this.big(W / 2, 384, String(n), 44, '#FFFFFF');
+    this.body(W / 2, 418, 'LEERTASTE', 15, NEON.cyan);
+    this.repeatEvery(1000, 10, () => {
+      n--;
+      if (n < 0) { Game.start('Title'); return; }
+      num.setText(String(n));
+      Sfx.tick();
+    });
+    this.after(700, () => {
+      this.onKey('Space', () => { Sfx.coin(); startRun(); }, { once: true });
+    });
+  }
+}
+
+// ============================================================
+//  Game loop
+// ============================================================
+const SCREENS = { Title, Transition, GameOver, FensterZu, WlanFangen, Sitzplatz, Fluchttreppe, Speichern, KloFinden };
+
+const Game = {
+  screen: null,
+  pending: null,
+  lastTime: 0,
+  start(key) { this.pending = key; },
+  switchScreen() {
+    const key = this.pending;
+    this.pending = null;
+    if (this.screen) this.screen.exit();
+    Effects.reset();
+    this.screen = new SCREENS[key]();
+    this.screen.enter();
+  },
+  frame(now) {
+    const delta = this.lastTime ? Math.min(now - this.lastTime, 100) : 16;
+    this.lastTime = now;
+    if (this.pending) this.switchScreen();
+    this.screen.tick(delta);
+    if (this.pending) this.switchScreen();
+    this.screen.render();
+    Effects.apply(now);
+    requestAnimationFrame(time => this.frame(time));
+  }
+};
+
+function showFatal(message) {
+  const element = document.createElement('div');
+  element.className = 'fatal';
+  element.textContent = message;
+  gameElement.append(element);
+}
+
+function boot() {
+  if (Game.screen) return;
+  try {
+    renderer = createRenderer();
+  } catch (error) {
+    showFatal('WebGL ist in diesem Browser nicht verfügbar. Die 2D-Version läuft trotzdem: dhbw-survival.html');
+    console.error(error);
+    return;
+  }
+  shaker.append(renderer.domElement, hudRoot, flashElement);
+  stage.append(shaker);
+  gameElement.append(stage);
+  fitStage();
+  new ResizeObserver(fitStage).observe(gameElement);
+  Game.start('Title');
+  requestAnimationFrame(time => Game.frame(time));
+}
+
+// Wait briefly for the fonts: text widths are measured when HUD items are created
+const fontsReady = (document.fonts && document.fonts.load)
+  ? Promise.all([document.fonts.load('40px "Press Start 2P"'), document.fonts.load('20px "VT323"')])
+  : Promise.resolve();
+Promise.race([fontsReady, new Promise(resolve => setTimeout(resolve, 1500))]).then(boot, boot);
+</script>
+</body>
+</html>
